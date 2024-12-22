@@ -1,0 +1,73 @@
+# Byte-compiled Python files
+*.py[cod]
+__pycache__/
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment files
+env/
+venv/
+ENV/
+*.env
+.env.*
+
+# Data and datasets
+data/
+datasets/
+*.csv
+*.tsv
+*.json
+
+# Images
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+*.tif
+*.tiff
+
+# Model checkpoints
+checkpoints/
+*.ckpt
+*.h5
+*.pth
+*.onnx
+
+# Logs and debug files
+logs/
+*.log
+debug/
+
+# TensorBoard logs
+runs/
+
+# Generated files
+*.pkl
+*.joblib
+*.pb
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Cache files
+.cache/
+*.cache
+
+# PyTorch or TensorFlow related files
+*.pt
+*.meta
+*.index
+*.data-*
+
+# Custom ignore files
+output/
+results/
