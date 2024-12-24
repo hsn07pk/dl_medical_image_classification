@@ -330,11 +330,11 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.5):
         super().__init__()
 
-        self.backbone = models.resnet50(pretrained=True)
-        self.backbone.fc = nn.Identity()  # Remove the original classification layer
+        self.backbone = models.densenet121(pretrained=True)
+        self.backbone.classifier = nn.Identity()  # Remove the original classification layer
 
         self.fc = nn.Sequential(
-            nn.Linear(2048, 256),
+            nn.Linear(1024, 256),  # Output size of DenseNet-121 is 1024
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
             nn.Linear(256, 128),
@@ -353,15 +353,15 @@ class MyDualModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.5):
         super().__init__()
 
-        backbone = models.resnet18(pretrained=True)
-        backbone.fc = nn.Identity()
+        backbone = models.densenet121(pretrained=True)
+        backbone.classifier = nn.Identity()
 
         # Here the two backbones will have the same structure but unshared weights
         self.backbone1 = copy.deepcopy(backbone)
         self.backbone2 = copy.deepcopy(backbone)
 
         self.fc = nn.Sequential(
-            nn.Linear(512 * 2, 256),
+            nn.Linear(1024 * 2, 256),  # DenseNet-121 outputs 1024 features per image
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
             nn.Linear(256, 128),
