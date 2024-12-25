@@ -16,12 +16,12 @@ ENV/
 # Data and datasets
 data/
 datasets/
-# *.csv
+*.csv
 *.tsv
 *.json
 
 # Images
-# *.jpg
+*.jpg
 *.jpeg
 *.png
 *.bmp
