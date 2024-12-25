@@ -171,6 +171,22 @@ transform_train = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
+<<<<<<< Updated upstream:vegg.py
+=======
+# transform_train = transforms.Compose([
+#     transforms.Resize((256, 256)),
+#     transforms.RandomCrop((210, 210)),
+#     SLORandomPad((224, 224)),
+#     FundRandomRotate(prob=0.5, degree=30),
+#     transforms.RandomHorizontalFlip(p=0.5),
+#     transforms.RandomVerticalFlip(p=0.5),
+#     transforms.ColorJitter(brightness=(0.1, 0.9)),
+#     transforms.ToTensor(),
+#     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+# ])
+
+
+>>>>>>> Stashed changes:vgg.py
 transform_test = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -330,11 +346,20 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.5):
         super().__init__()
 
-        self.backbone = models.vgg16(pretrained=True)
-        self.backbone.fc = nn.Identity()  # Remove the original classification layer
+        # Load pretrained VGG16 and extract feature layers
+        self.backbone = models.vgg16(pretrained=True).features
+        
+        for param in self.backbone.parameters():
+            param.requires_grad = False
 
+
+        # Fully connected layers for classification
         self.fc = nn.Sequential(
+<<<<<<< Updated upstream:vegg.py
             nn.Linear(512 * 7 * 7, 256),
+=======
+            nn.Linear(512 * 7 * 7, 256),  # Adjust for flattened feature map size
+>>>>>>> Stashed changes:vgg.py
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
             nn.Linear(256, 128),
@@ -344,8 +369,13 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.backbone.features(x)
-        x = torch.flatten(x, 1) 
+        # Pass through the feature extractor
+        x = self.backbone(x)
+
+        # Flatten feature map into a vector
+        x = torch.flatten(x, start_dim=1)  # Shape: [batch_size, 512*7*7]
+
+        # Pass through fully connected layers
         x = self.fc(x)
         return x
 
@@ -354,15 +384,13 @@ class MyDualModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.5):
         super().__init__()
 
-        backbone = models.vgg16(init_weights=True)
-        backbone.fc = nn.Identity()
+        # Define separate backbones for two inputs
+        self.backbone1 = models.vgg16(pretrained=True).features
+        self.backbone2 = models.vgg16(pretrained=True).features
 
-        # Here the two backbones will have the same structure but unshared weights
-        self.backbone1 = copy.deepcopy(backbone)
-        self.backbone2 = copy.deepcopy(backbone)
-
+        # Define fully connected layers
         self.fc = nn.Sequential(
-            nn.Linear(512 * 7 * 7 * 2 , 256),
+            nn.Linear(512 * 7 * 7 * 2, 256),  # Double feature size due to concatenation
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
             nn.Linear(256, 128),
@@ -372,14 +400,21 @@ class MyDualModel(nn.Module):
         )
 
     def forward(self, images):
+        # Unpack the dual input images
         image1, image2 = images
 
-        x1 = self.backbone1.features(image1)
-        x2 = self.backbone2.features(image2)
+        # Pass both images through their respective backbones
+        x1 = self.backbone1(image1)
+        x2 = self.backbone2(image2)
 
-        x1 = torch.flatten(x1, start_dim=1) 
-        x2 = torch.flatten(x2, start_dim=1)
+        # Flatten the feature maps
+        x1 = torch.flatten(x1, start_dim=1)  # Shape: [batch_size, 512*7*7]
+        x2 = torch.flatten(x2, start_dim=1)  # Shape: [batch_size, 512*7*7]
+
+        # Concatenate features from both images
         x = torch.cat((x1, x2), dim=1)
+
+        # Pass concatenated features through fully connected layers
         x = self.fc(x)
         return x
 
