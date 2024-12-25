@@ -14,7 +14,7 @@ from tqdm import tqdm
 # Hyperparameters
 batch_size = 16
 learning_rate = 0.001
-num_epochs = 20
+num_epochs = 50
 num_classes = 5  # DR levels
 checkpoint_path = './best_model.pth'
 
@@ -86,7 +86,7 @@ class MyModel(nn.Module):
         return self.backbone(x)
 
 # Loss Function
-class_weights = torch.tensor([1.0, 2.0, 1.5, 1.5, 2.0])  # Example weights for imbalance
+class_weights = torch.tensor([1.0, 2.0, 1.5, 1.5, 2.0]).cuda()  # Move class weights to GPU
 criterion = nn.CrossEntropyLoss(weight=class_weights)
 
 # Training Function
@@ -101,7 +101,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, device, n
         all_preds, all_labels = [], []
 
         for images, labels in tqdm(train_loader):
-            images, labels = images.to(device), labels.to(device)
+            images, labels = images.to(device), labels.to(device)  # Move data to GPU
             optimizer.zero_grad()
 
             outputs = model(images)
@@ -138,7 +138,7 @@ def evaluate_model(model, loader, device):
 
     with torch.no_grad():
         for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
+            images, labels = images.to(device), labels.to(device)  # Move data to GPU
             outputs = model(images)
             preds = torch.argmax(outputs, dim=1)
             all_preds.extend(preds.cpu().numpy())
@@ -148,21 +148,30 @@ def evaluate_model(model, loader, device):
 
 # Main
 if __name__ == "__main__":
+    # Set device (GPU or CPU)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Load datasets
     train_dataset = RetinopathyDataset('./DeepDRiD/train.csv', './DeepDRiD/train/', transform_train)
     val_dataset = RetinopathyDataset('./DeepDRiD/val.csv', './DeepDRiD/val/', transform_test)
     test_dataset = RetinopathyDataset('./DeepDRiD/test.csv', './DeepDRiD/test/', transform_test, test=True)
 
+    # Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MyModel(num_classes=num_classes).to(device)
+    # Initialize model
+    model = MyModel(num_classes=num_classes).to(device)  # Move model to GPU
 
+    # Define optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5, verbose=True)
 
+    # Train model
     model = train_model(model, train_loader, val_loader, optimizer, scheduler, device, num_epochs)
 
     # Test Evaluation
-    evaluate_model(model, test_loader, device)
+    test_kappa = evaluate_model(model, test_loader, device)
+    print(f"Test Kappa: {test_kappa:.4f}")
