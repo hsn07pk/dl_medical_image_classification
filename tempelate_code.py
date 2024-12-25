@@ -3,7 +3,7 @@ import os
 import random
 import sys
 
-import numpy as np 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -18,7 +18,7 @@ from tqdm import tqdm
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -158,18 +158,6 @@ class FundRandomRotate:
             return transforms.functional.rotate(img, angle)
         return img
 
-
-# ADDED FUNCTION TO ADD GAUSSIAN NOISE...
-
-# transform_train = transforms.Compose([
-#     transforms.Resize((256, 256)),
-#     transforms.RandomCrop((224, 224)),  # Slightly larger crop to retain features.
-#     transforms.RandomHorizontalFlip(p=0.5),
-#     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
-#     FundRandomRotate(prob=0.3, degree=20),  # Reduce probability and degree.
-#     transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-# ])
 
 transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
@@ -339,7 +327,7 @@ def compute_metrics(preds, labels, per_class=False):
 
 
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.52):
+    def __init__(self, num_classes=5, dropout_rate=0.5):
         super().__init__()
 
         self.backbone = models.resnet18(pretrained=True)

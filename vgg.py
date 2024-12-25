@@ -159,18 +159,6 @@ class FundRandomRotate:
         return img
 
 
-# ADDED FUNCTION TO ADD GAUSSIAN NOISE...
-
-# transform_train = transforms.Compose([
-#     transforms.Resize((256, 256)),
-#     transforms.RandomCrop((224, 224)),  # Slightly larger crop to retain features.
-#     transforms.RandomHorizontalFlip(p=0.5),
-#     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
-#     FundRandomRotate(prob=0.3, degree=20),  # Reduce probability and degree.
-#     transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-# ])
-
 transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
@@ -339,14 +327,14 @@ def compute_metrics(preds, labels, per_class=False):
 
 
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.52):
+    def __init__(self, num_classes=5, dropout_rate=0.51):
         super().__init__()
 
-        self.backbone = models.resnet18(pretrained=True)
+        self.backbone = models.vgg16(pretrained=True)
         self.backbone.fc = nn.Identity()  # Remove the original classification layer
 
         self.fc = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(512 * 7 * 7, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
             nn.Linear(256, 128),
@@ -356,48 +344,52 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.backbone(x)
+        x = self.backbone.features(x)
+        x = torch.flatten(x, 1) 
         x = self.fc(x)
         return x
 
 
-class MyDualModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.5):
-        super().__init__()
+# class MyDualModel(nn.Module):
+#     def __init__(self, num_classes=5, dropout_rate=0.5):
+#         super().__init__()
 
-        backbone = models.resnet18(pretrained=True)
-        backbone.fc = nn.Identity()
+#         backbone = models.vgg16(init_weights=True)
+#         backbone.fc = nn.Identity()
 
-        # Here the two backbones will have the same structure but unshared weights
-        self.backbone1 = copy.deepcopy(backbone)
-        self.backbone2 = copy.deepcopy(backbone)
+#         # Here the two backbones will have the same structure but unshared weights
+#         self.backbone1 = copy.deepcopy(backbone)
+#         self.backbone2 = copy.deepcopy(backbone)
 
-        self.fc = nn.Sequential(
-            nn.Linear(512 * 2, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(128, num_classes)
-        )
+#         self.fc = nn.Sequential(
+#             nn.Linear(512 * 7 * 7 * 2 , 256),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(p=dropout_rate),
+#             nn.Linear(256, 128),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(p=dropout_rate),
+#             nn.Linear(128, num_classes)
+#         )
 
-    def forward(self, images):
-        image1, image2 = images
+    # def forward(self, images):
+    #     image1, image2 = images
 
-        x1 = self.backbone1(image1)
-        x2 = self.backbone2(image2)
+    #     x1 = self.backbone1.features(image1)
+    #     x2 = self.backbone2.features(image2)
 
-        x = torch.cat((x1, x2), dim=1)
-        x = self.fc(x)
-        return x
+    #     x1 = torch.flatten(x1, start_dim=1) 
+    #     x2 = torch.flatten(x2, start_dim=1)
+    #     x = torch.cat((x1, x2), dim=1)
+    #     x = self.fc(x)
+    #     return x
 
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
 
-    mode = 'single'  # forward single image to the model each time
+    #TODO: change mode here
+    mode = 'single'  # forward single image to the model each time 
     # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
@@ -405,8 +397,8 @@ if __name__ == '__main__':
     # Define the model
     if mode == 'single':
         model = MyModel()
-    else:
-        model = MyDualModel()
+    # else:
+    #     model = MyDualModel()
 
     print(model, '\n')
     print('Pipeline Mode:', mode)
