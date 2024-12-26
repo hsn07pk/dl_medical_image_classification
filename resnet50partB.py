@@ -45,13 +45,17 @@ class DiabeticRetinopathyDataset(Dataset):
 def load_and_balance_data(csv_path, image_dir):
     df = pd.read_csv(csv_path)
 
+    # Filter out rows where the image file does not exist
+    df['exists'] = df['image'].apply(lambda x: os.path.exists(os.path.join(image_dir, f"{x}.jpeg")))
+    df = df[df['exists']].drop(columns=['exists'])
+
     # Balance the dataset
     stage_counts = df['level'].value_counts()
     min_samples = stage_counts.min()
     balanced_df = df.groupby('level').apply(lambda x: x.sample(min_samples, random_state=42)).reset_index(drop=True)
 
     # Split the balanced dataset for training
-    train_df, _ = train_test_split(balanced_df, test_size=0.1, stratify=balanced_df['level'], random_state=42)
+    train_df, _ = train_test_split(balanced_df, test_size=0.2, stratify=balanced_df['level'], random_state=42)
     return train_df, df
 
 # Transformations
@@ -166,7 +170,7 @@ def main():
 
     # Define loss function, optimizer, and scheduler
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Train and validate the model
