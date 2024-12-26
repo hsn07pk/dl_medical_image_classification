@@ -49,31 +49,78 @@ class RetinopathyDataset(Dataset):
         self.transform = transform
         self.mode = mode
         self.test = test
+        
+        if self.mode == 'single':
+            self.data = self.load_data()
+        else:
+            self.data = self.load_data_dual()
 
     def __len__(self):
-        return len(self.dataframe)
+        return len(self.data)
 
     def __getitem__(self, index):
         if self.mode == 'single':
             return self.get_item(index)
         else:
             return self.get_item_dual(index)
+        
+    def load_data(self):
+        df = pd.read_csv(self.dataframe)
+
+        data = []
+        for _, row in df.iterrows():
+            file_info = dict()
+            file_info['img_path'] = os.path.join(self.image_dir, row['img_path'])
+            if not self.test:
+                file_info['dr_level'] = int(row['patient_DR_Level'])
+            data.append(file_info)
+        return data
 
     def get_item(self, index):
-        row = self.dataframe.iloc[index]
-        img_path = os.path.join(self.image_dir, f"{row['image']}.jpeg")
-        img = Image.open(img_path).convert('RGB')
+        data = self.data[index]
+        img = Image.open(data['img_path']).convert('RGB')
         if self.transform:
             img = self.transform(img)
 
         if not self.test:
-            label = torch.tensor(row['level'], dtype=torch.int64)
+            label = torch.tensor(data['dr_level'], dtype=torch.int64)
             return img, label
         else:
             return img
 
+    # 2. dual image
+    def load_data_dual(self):
+        df = pd.read_csv(self.ann_file)
+
+        df['prefix'] = df['image_id'].str.split('_').str[0]  # The patient id of each image
+        df['suffix'] = df['image_id'].str.split('_').str[1].str[0]  # The left or right eye
+        grouped = df.groupby(['prefix', 'suffix'])
+
+        data = []
+        for (prefix, suffix), group in grouped:
+            file_info = dict()
+            file_info['img_path1'] = os.path.join(self.image_dir, group.iloc[0]['img_path'])
+            file_info['img_path2'] = os.path.join(self.image_dir, group.iloc[1]['img_path'])
+            if not self.test:
+                file_info['dr_level'] = int(group.iloc[0]['patient_DR_Level'])
+            data.append(file_info)
+        return data
+
     def get_item_dual(self, index):
-        raise NotImplementedError("Dual mode is not supported in this dataset.")
+        data = self.data[index]
+        img1 = Image.open(data['img_path1']).convert('RGB')
+        img2 = Image.open(data['img_path2']).convert('RGB')
+
+        if self.transform:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+
+        if not self.test:
+            label = torch.tensor(data['dr_level'], dtype=torch.int64)
+            return [img1, img2], label
+        else:
+            return [img1, img2]
+
 
 
 def load_and_balance_data(csv_path, image_dir):
