@@ -79,7 +79,7 @@ transform_test = transforms.Compose([
 class DRModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.5):
         super(DRModel, self).__init__()
-        self.backbone = models.resnet50(pretrained=True)
+        self.backbone = models.resnet50(pretrained=False)
         self.backbone.fc = nn.Sequential(
             nn.Linear(2048, 512),
             nn.ReLU(),
@@ -151,8 +151,8 @@ def train_model(model, train_loader, val_loader, device, criterion, optimizer, s
 
 # Main Pipeline
 def main():
-    csv_path = "./Bdataset/trainLabels.csv"
-    image_dir = "./Bdataset/resized_train_cropped/resized_train_cropped"
+    csv_path = "./7/trainLabels.csv"
+    image_dir = "./7/resized_train_cropped/resized_train_cropped"
 
     # Load and balance the data
     train_df, val_df = load_and_balance_data(csv_path, image_dir)
@@ -165,8 +165,8 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     # Initialize the model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DRModel(num_classes=num_classes).to(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Check for GPU
+    model = DRModel(num_classes=num_classes).to(device)  # Move model to device
 
     # Define loss function, optimizer, and scheduler
     criterion = nn.CrossEntropyLoss()
