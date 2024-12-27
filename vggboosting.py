@@ -355,10 +355,17 @@ class MyModel(nn.Module):
 def train_and_extract_features(model, train_loader, val_loader, device, criterion, optimizer, num_epochs=25):
     model.train()
     all_train_features, all_train_labels = [], []
+    
+    # Initialize the booster at the start
+    booster = GradientBoostingClassifier(
+        n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
+    )
 
     for epoch in range(1, num_epochs + 1):
         print(f'\nEpoch {epoch}/{num_epochs}')
         running_loss = []
+        epoch_features = []
+        epoch_labels = []
 
         with tqdm(total=len(train_loader), desc='Training', unit='batch', file=sys.stdout) as pbar:
             for images, labels in train_loader:
@@ -375,8 +382,16 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
                 # Collect features from the model for boosting
                 with torch.no_grad():
                     features = outputs.cpu().numpy()
-                    all_train_features.append(features)
-                    all_train_labels.append(labels.cpu().numpy())
+                    epoch_features.append(features)
+                    epoch_labels.append(labels.cpu().numpy())
+
+        # Concatenate epoch features and labels
+        epoch_features = np.concatenate(epoch_features)
+        epoch_labels = np.concatenate(epoch_labels).flatten()
+        
+        # Add to overall features and labels
+        all_train_features.append(epoch_features)
+        all_train_labels.append(epoch_labels)
 
         epoch_loss = sum(running_loss) / len(running_loss)
         print(f'[Epoch {epoch}] Training Loss: {epoch_loss:.4f}')
@@ -391,25 +406,27 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
                 all_val_features.append(outputs.cpu().numpy())
                 all_val_labels.append(labels.cpu().numpy())
 
-        all_val_features = np.concatenate(all_val_features)
-        all_val_labels = np.concatenate(all_val_labels)
+        val_features = np.concatenate(all_val_features)
+        val_labels = np.concatenate(all_val_labels)
 
-        # Evaluate boosting after each epoch
-        if epoch > 1:  # Ensure booster exists after the first epoch
-            val_preds = booster.predict(all_val_features)
-            val_accuracy = accuracy_score(all_val_labels.flatten(), val_preds)
-            print(f'[Epoch {epoch}] Boosting Validation Accuracy: {val_accuracy:.4f}')
+        # Train booster on accumulated features after each epoch
+        train_features_combined = np.concatenate(all_train_features)
+        train_labels_combined = np.concatenate(all_train_labels)
+        
+        booster.fit(train_features_combined, train_labels_combined)
+        
+        # Evaluate boosting
+        val_preds = booster.predict(val_features)
+        val_accuracy = accuracy_score(val_labels.flatten(), val_preds)
+        print(f'[Epoch {epoch}] Boosting Validation Accuracy: {val_accuracy:.4f}')
 
-        # Prepare features for boosting training after each epoch
-        if epoch == num_epochs:  # Train booster at the end
-            all_train_features = np.concatenate(all_train_features)
-            all_train_labels = np.concatenate(all_train_labels).flatten()
-            booster = GradientBoostingClassifier(
-                n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
-            )
-            booster.fit(all_train_features, all_train_labels)
+    # Return final features and labels
+    final_train_features = np.concatenate(all_train_features)
+    final_train_labels = np.concatenate(all_train_labels)
+    final_val_features = val_features
+    final_val_labels = val_labels
 
-    return all_train_features, all_train_labels, all_val_features, all_val_labels
+    return final_train_features, final_train_labels, final_val_features, final_val_labels
 
 
 if __name__ == '__main__':
