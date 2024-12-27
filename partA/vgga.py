@@ -331,11 +331,9 @@ class MyModel(nn.Module):
         super().__init__()
 
         self.backbone = models.vgg16(pretrained=True)
-        for param in self.backbone.parameters():
-            param.requires_grad = True
-        # self.backbone.fc = nn.Identity() 
+        self.backbone.fc = nn.Identity()  # Remove the original classification layer
 
-        self.backbone.classifier = nn.Sequential(
+        self.fc = nn.Sequential(
             nn.Linear(512 * 7 * 7, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
@@ -346,7 +344,9 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.backbone(x)
+        x = self.backbone.features(x)
+        x = torch.flatten(x, 1) 
+        x = self.fc(x)
         return x
 
 
@@ -388,7 +388,7 @@ if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
 
- 
+    #TODO: change mode here
     mode = 'single'  # forward single image to the model each time 
     # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
@@ -431,7 +431,7 @@ if __name__ == '__main__':
     model = train_model(
         model, train_loader, val_loader, device, criterion, optimizer,
         lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+        checkpoint_path='./model_1.pth'
     )
 
     # Load the pretrained checkpoint
