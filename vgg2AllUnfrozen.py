@@ -18,7 +18,7 @@ from tqdm import tqdm
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -163,7 +163,7 @@ transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
-    FundRandomRotate(prob=0.5, degree=30),
+    # FundRandomRotate(prob=0.5, degree=30),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
@@ -326,9 +326,22 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)  # Average pooling along channel axis
+        max_out, _ = torch.max(x, dim=1, keepdim=True)  # Max pooling along channel axis
+        x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
+        x = self.conv(x)  # Learn spatial importance
+        return self.sigmoid(x)  # Scale spatial importance
+
 
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.51):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
         # Load the pretrained VGG16 model
@@ -337,6 +350,8 @@ class MyModel(nn.Module):
         # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
+            
+        self.spatial_attention = SpatialAttention()
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -354,7 +369,11 @@ class MyModel(nn.Module):
 
     def forward(self, x):
         # Forward pass through the VGG16 backbone
-        x = self.backbone(x)
+        features = self.backbone.features(x)
+        attention = self.spatial_attention(features)
+        features = features * attention
+        features = features.view(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
 
 
