@@ -330,13 +330,19 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.51):
         super().__init__()
 
+        # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
+        
+        # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
-        # self.backbone.fc = nn.Identity() 
 
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.classifier[0].in_features
+        
+        # Replace the classifier with a custom one
         self.backbone.classifier = nn.Sequential(
-            nn.Linear(512 * 7 * 7, 256),
+            nn.Linear(in_features, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
             nn.Linear(256, 128),
@@ -346,6 +352,7 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
+        # Forward pass through the VGG16 backbone
         x = self.backbone(x)
         return x
 
@@ -419,6 +426,17 @@ if __name__ == '__main__':
     # Use GPU device is possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
+    
+    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
+    
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = f"backbone.{key}"  # Prefix with 'backbone.'
+        new_state_dict[new_key] = value
+    
+    model.load_state_dict(new_state_dict, strict=False)
+    
+    
 
     # Move class weights to the device
     model = model.to(device)
@@ -435,8 +453,7 @@ if __name__ == '__main__':
     )
 
     # Load the pretrained checkpoint
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    model.load_state_dict(state_dict, strict=True)
+
 
     # Make predictions on testing set and save the prediction results
     evaluate_model(model, test_loader, device, test_only=True)
