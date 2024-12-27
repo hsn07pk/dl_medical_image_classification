@@ -19,7 +19,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -356,8 +356,8 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
     model.train()
     all_train_features, all_train_labels = [], []
 
-    for epoch in range(num_epochs):
-        print(f'\nEpoch {epoch + 1}/{num_epochs}')
+    for epoch in range(1, num_epochs + 1):
+        print(f'\nEpoch {epoch}/{num_epochs}')
         running_loss = []
 
         with tqdm(total=len(train_loader), desc='Training', unit='batch', file=sys.stdout) as pbar:
@@ -378,24 +378,38 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
                     all_train_features.append(features)
                     all_train_labels.append(labels.cpu().numpy())
 
-        print(f'Epoch Loss: {sum(running_loss) / len(running_loss):.4f}')
+        epoch_loss = sum(running_loss) / len(running_loss)
+        print(f'[Epoch {epoch}] Training Loss: {epoch_loss:.4f}')
 
-    # Extract features for validation data
-    model.eval()
-    all_val_features, all_val_labels = [], []
-    with torch.no_grad():
-        for images, labels in val_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            all_val_features.append(outputs.cpu().numpy())
-            all_val_labels.append(labels.cpu().numpy())
+        # Validation at the end of each epoch
+        model.eval()
+        all_val_features, all_val_labels = [], []
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                all_val_features.append(outputs.cpu().numpy())
+                all_val_labels.append(labels.cpu().numpy())
 
-    return (
-        np.concatenate(all_train_features),
-        np.concatenate(all_train_labels),
-        np.concatenate(all_val_features),
-        np.concatenate(all_val_labels),
-    )
+        all_val_features = np.concatenate(all_val_features)
+        all_val_labels = np.concatenate(all_val_labels)
+
+        # Evaluate boosting after each epoch
+        if epoch > 1:  # Ensure booster exists after the first epoch
+            val_preds = booster.predict(all_val_features)
+            val_accuracy = accuracy_score(all_val_labels.flatten(), val_preds)
+            print(f'[Epoch {epoch}] Boosting Validation Accuracy: {val_accuracy:.4f}')
+
+        # Prepare features for boosting training after each epoch
+        if epoch == num_epochs:  # Train booster at the end
+            all_train_features = np.concatenate(all_train_features)
+            all_train_labels = np.concatenate(all_train_labels).flatten()
+            booster = GradientBoostingClassifier(
+                n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
+            )
+            booster.fit(all_train_features, all_train_labels)
+
+    return all_train_features, all_train_labels, all_val_features, all_val_labels
 
 
 if __name__ == '__main__':
