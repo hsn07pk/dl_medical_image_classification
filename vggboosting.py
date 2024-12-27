@@ -13,6 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+from sklearn.ensemble import GradientBoostingClassifier
 
 # Hyper Parameters
 batch_size = 24
@@ -329,18 +330,13 @@ def compute_metrics(preds, labels, per_class=False):
 class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.51):
         super().__init__()
-
-        # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
-        
-        # Unfreeze all layers
+
         for param in self.backbone.parameters():
             param.requires_grad = True
 
-        # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
-        
-        # Replace the classifier with a custom one
+
         self.backbone.classifier = nn.Sequential(
             nn.Linear(in_features, 256),
             nn.ReLU(inplace=True),
@@ -352,10 +348,54 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        # Forward pass through the VGG16 backbone
         x = self.backbone(x)
         return x
 
+
+def train_and_extract_features(model, train_loader, val_loader, device, criterion, optimizer, num_epochs=25):
+    model.train()
+    all_train_features, all_train_labels = [], []
+
+    for epoch in range(num_epochs):
+        print(f'\nEpoch {epoch + 1}/{num_epochs}')
+        running_loss = []
+
+        with tqdm(total=len(train_loader), desc='Training', unit='batch', file=sys.stdout) as pbar:
+            for images, labels in train_loader:
+                images, labels = images.to(device), labels.to(device)
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels.long())
+                loss.backward()
+                optimizer.step()
+
+                running_loss.append(loss.item())
+                pbar.update(1)
+
+                # Collect features from the model for boosting
+                with torch.no_grad():
+                    features = outputs.cpu().numpy()
+                    all_train_features.append(features)
+                    all_train_labels.append(labels.cpu().numpy())
+
+        print(f'Epoch Loss: {sum(running_loss) / len(running_loss):.4f}')
+
+    # Extract features for validation data
+    model.eval()
+    all_val_features, all_val_labels = [], []
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            all_val_features.append(outputs.cpu().numpy())
+            all_val_labels.append(labels.cpu().numpy())
+
+    return (
+        np.concatenate(all_train_features),
+        np.concatenate(all_train_labels),
+        np.concatenate(all_val_features),
+        np.concatenate(all_val_labels),
+    )
 
 
 if __name__ == '__main__':
@@ -412,13 +452,23 @@ if __name__ == '__main__':
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Train and evaluate the model with the training and validation set
-    model = train_model(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+    train_features, train_labels, val_features, val_labels = train_and_extract_features(
+        model, train_loader, val_loader, device, criterion, optimizer, num_epochs=num_epochs
     )
+    
 
     # Load the pretrained checkpoint
+    # Apply a boosting ensemble method
+    train_labels = train_labels.flatten()
+    val_labels = val_labels.flatten()
+
+    booster = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
+    booster.fit(train_features, train_labels)
+    val_preds = booster.predict(val_features)
+
+    # Evaluate
+    accuracy = accuracy_score(val_labels, val_preds)
+    print(f'Boosting Validation Accuracy: {accuracy:.4f}')
 
 
     # Make predictions on testing set and save the prediction results
