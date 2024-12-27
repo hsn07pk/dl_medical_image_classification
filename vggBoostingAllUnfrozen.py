@@ -13,12 +13,15 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+import torch.nn.functional as F 
+from sklearn.ensemble import GradientBoostingClassifier
+
 
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 100
 
 
 class RetinopathyDataset(Dataset):
@@ -163,7 +166,7 @@ transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
-    FundRandomRotate(prob=0.5, degree=30),
+    # FundRandomRotate(prob=0.5, degree=30),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
@@ -326,8 +329,51 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)  # Average pooling along channel axis
+        max_out, _ = torch.max(x, dim=1, keepdim=True)  # Max pooling along channel axis
+        x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
+        x = self.conv(x)  # Learn spatial importance
+        return self.sigmoid(x)  # Scale spatial importance
+    
+    
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling parameter
+
+    def forward(self, x):
+        batch_size, C, H, W = x.size()  # Input feature map dimensions: (B, C, H, W)
+
+        # Query, Key, and Value transformations
+        query = self.query_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C//8)
+        key = self.key_conv(x).view(batch_size, -1, H * W)  # Shape: (B, C//8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C)
+
+        # Compute attention weights
+        attention = torch.bmm(query, key)  # Shape: (B, H*W, H*W)
+        attention = F.softmax(attention, dim=-1)  # Normalize attention weights across spatial dimensions
+
+        # Weighted sum of values
+        out = torch.bmm(attention, value).permute(0, 2, 1)  # Shape: (B, C, H*W)
+        out = out.view(batch_size, C, H, W)  # Reshape back to spatial dimensions
+
+        # Apply learnable scaling and residual connection
+        out = self.gamma * out + x
+        return out
+
+
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.51):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
         # Load the pretrained VGG16 model
@@ -336,6 +382,8 @@ class MyModel(nn.Module):
         # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
+            
+        self.self_attention = SelfAttention(in_channels=512)
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -353,8 +401,107 @@ class MyModel(nn.Module):
 
     def forward(self, x):
         # Forward pass through the VGG16 backbone
-        x = self.backbone(x)
+        features = self.backbone.features(x)
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
+
+
+class BoostingEnsemble(nn.Module):
+    def __init__(self, models, num_classes=5):
+        super(BoostingEnsemble, self).__init__()
+        self.models = models  # List of models
+        self.num_classes = num_classes
+        self.boosting_model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1)
+
+    def forward(self, x):
+        # Collect predictions from all models
+        all_preds = []
+        for model in self.models:
+            model.eval()  # Set model to evaluation mode
+            with torch.no_grad():
+                output = model(x)
+                preds = torch.argmax(output, dim=1)
+                all_preds.append(preds.cpu().numpy())
+        
+        # Convert to a format suitable for the boosting model
+        all_preds = np.array(all_preds).T  # Shape: (batch_size, num_models)
+        
+        return all_preds
+
+    def fit_boosting(self, X_train, y_train):
+        # Train the boosting model
+        self.boosting_model.fit(X_train, y_train)
+    
+    def predict_boosting(self, X_test):
+        return self.boosting_model.predict(X_test)
+    
+    def evaluate_boosting(self, X_test, y_test):
+        y_pred = self.predict_boosting(X_test)
+        kappa = cohen_kappa_score(y_test, y_pred, weights='quadratic')
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+        recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+        
+        print(f'Boosting Kappa: {kappa:.4f} Accuracy: {accuracy:.4f} Precision: {precision:.4f} Recall: {recall:.4f}')
+        return kappa, accuracy, precision, recall
+
+
+
+def train_model_with_boosting(model, train_loader, val_loader, device, criterion, optimizer, lr_scheduler, num_epochs=25, checkpoint_path='model.pth'):
+    best_model = model.state_dict()
+    best_epoch = None
+    best_val_kappa = -1.0
+
+    all_train_preds = []
+    all_train_labels = []
+
+    for epoch in range(1, num_epochs + 1):
+        print(f'\nEpoch {epoch}/{num_epochs}')
+        running_loss = []
+
+        model.train()
+        with tqdm(total=len(train_loader), desc=f'Training', unit=' batch', file=sys.stdout) as pbar:
+            for images, labels in train_loader:
+                images = images.to(device)
+                labels = labels.to(device)
+
+                optimizer.zero_grad()
+
+                outputs = model(images)
+                loss = criterion(outputs, labels.long())
+
+                loss.backward()
+                optimizer.step()
+
+                preds = torch.argmax(outputs, 1)
+                all_train_preds.extend(preds.cpu().numpy())
+                all_train_labels.extend(labels.cpu().numpy())
+
+                running_loss.append(loss.item())
+                pbar.update(1)
+
+        lr_scheduler.step()
+
+        epoch_loss = sum(running_loss) / len(running_loss)
+        train_metrics = compute_metrics(all_train_preds, all_train_labels)
+        kappa, accuracy, precision, recall = train_metrics[:4]
+        print(f'[Train] Kappa: {kappa:.4f} Accuracy: {accuracy:.4f} Precision: {precision:.4f} Recall: {recall:.4f} Loss: {epoch_loss:.4f}')
+
+        if len(train_metrics) > 4:
+            precision_per_class, recall_per_class = train_metrics[4:]
+            for i, (precision, recall) in enumerate(zip(precision_per_class, recall_per_class)):
+                print(f'[Train] Class {i}: Precision: {precision:.4f}, Recall: {recall:.4f}')
+
+    # Save the final model state
+    torch.save(model.state_dict(), checkpoint_path)
+    
+    return model  # Add this line to return the trained model
 
 
 
@@ -364,16 +511,17 @@ if __name__ == '__main__':
 
  
     mode = 'single'  # forward single image to the model each time 
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
     # Define the model
     if mode == 'single':
-        model = MyModel()
+        models = [MyModel() for _ in range(5)]
     # else:
     #     model = MyDualModel()
 
-    print(model, '\n')
+    print(models, '\n')
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -386,13 +534,18 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+    model = BoostingEnsemble(models=models)
     # Define the weighted CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
     # Use GPU device is possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('Device:', device)
-    
+    print('Device:', device)    
+    for model in models:
+        model = model.to(device)
+
+    model = BoostingEnsemble(models=models)
+    model = model.to(device)
     state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
     
     new_state_dict = {}
@@ -402,17 +555,16 @@ if __name__ == '__main__':
     
     model.load_state_dict(new_state_dict, strict=False)
     
-    
-
-    # Move class weights to the device
-    model = model.to(device)
+    params = []
+    for model in models:
+        params += list(model.parameters())
 
     # Optimizer and Learning rate scheduler
     optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Train and evaluate the model with the training and validation set
-    model = train_model(
+    model = train_model_with_boosting(
         model, train_loader, val_loader, device, criterion, optimizer,
         lr_scheduler=lr_scheduler, num_epochs=num_epochs,
         checkpoint_path='./model_vgg.pth'

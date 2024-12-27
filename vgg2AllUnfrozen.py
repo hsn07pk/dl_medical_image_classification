@@ -13,6 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+import torch.nn.functional as F 
 
 # Hyper Parameters
 batch_size = 24
@@ -338,6 +339,35 @@ class SpatialAttention(nn.Module):
         x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
         x = self.conv(x)  # Learn spatial importance
         return self.sigmoid(x)  # Scale spatial importance
+    
+    
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling parameter
+
+    def forward(self, x):
+        batch_size, C, H, W = x.size()  # Input feature map dimensions: (B, C, H, W)
+
+        # Query, Key, and Value transformations
+        query = self.query_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C//8)
+        key = self.key_conv(x).view(batch_size, -1, H * W)  # Shape: (B, C//8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C)
+
+        # Compute attention weights
+        attention = torch.bmm(query, key)  # Shape: (B, H*W, H*W)
+        attention = F.softmax(attention, dim=-1)  # Normalize attention weights across spatial dimensions
+
+        # Weighted sum of values
+        out = torch.bmm(attention, value).permute(0, 2, 1)  # Shape: (B, C, H*W)
+        out = out.view(batch_size, C, H, W)  # Reshape back to spatial dimensions
+
+        # Apply learnable scaling and residual connection
+        out = self.gamma * out + x
+        return out
 
 
 class MyModel(nn.Module):
@@ -351,7 +381,7 @@ class MyModel(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = True
             
-        self.spatial_attention = SpatialAttention()
+        self.self_attention = SelfAttention(in_channels=512)
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -370,9 +400,12 @@ class MyModel(nn.Module):
     def forward(self, x):
         # Forward pass through the VGG16 backbone
         features = self.backbone.features(x)
-        attention = self.spatial_attention(features)
-        features = features * attention
-        features = features.view(features.size(0), -1)  # Flatten
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
         x = self.backbone.classifier(features)
         return x
 
