@@ -460,8 +460,16 @@ def weighted_ensemble_predictions(ensemble, weights, dataloader, device):
             # Dynamically unpack the data
             images = data[0]  # First element should be images
             labels = data[1] if len(data) > 1 else None  # Second element if available
+            
+            # Ensure images have the correct shape
+            if images.ndim == 3:  # Single image without batch dimension
+                images = images.unsqueeze(0)  # Add batch dimension
             images = images.to(device)
-            outputs = [weight * F.softmax(model(images), dim=1) for model, weight in zip(ensemble.models, weights)]
+            
+            outputs = [
+                weight * F.softmax(model(images), dim=1) 
+                for model, weight in zip(ensemble.models, weights)
+            ]
             ensemble_output = sum(outputs)
             predictions.append(ensemble_output.argmax(dim=1).cpu().numpy())
     
