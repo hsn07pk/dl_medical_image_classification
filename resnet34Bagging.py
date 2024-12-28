@@ -543,9 +543,9 @@ if __name__ == '__main__':
     # Make predictions on the test set using the ensemble
     evaluate_model(ensemble, test_loader, device, test_only=True, prediction_path='./test_predictions.csv')
 
-    ensemble_predictions = weighted_ensemble_predictions(ensemble, weights, test_loader, device)
+    # ensemble_predictions = weighted_ensemble_predictions(ensemble, weights, test_loader, device)
     
-    # Optionally, save the predictions to a CSV
-    predictions_df = pd.DataFrame(ensemble_predictions, columns=['Predicted Class'])
-    predictions_df.to_csv('./ensemble_predictions.csv', index=False)
-    print("Predictions saved to './ensemble_predictions.csv'")
+    # # Optionally, save the predictions to a CSV
+    # predictions_df = pd.DataFrame(ensemble_predictions, columns=['Predicted Class'])
+    # predictions_df.to_csv('./ensemble_predictions.csv', index=False)
+    # print("Predictions saved to './ensemble_predictions.csv'")
