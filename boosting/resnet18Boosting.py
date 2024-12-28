@@ -439,8 +439,6 @@ class BoostingEnsemble(nn.Module):
             ensemble_output += alpha * output  # Weighted sum of predictions
         return ensemble_output
     
-    
-    
 
 
 if __name__ == '__main__':
