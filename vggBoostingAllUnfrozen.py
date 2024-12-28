@@ -21,7 +21,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 100
+num_epochs = 10
 
 
 class RetinopathyDataset(Dataset):
@@ -253,6 +253,7 @@ def train_model(model, train_loader, val_loader, device, criterion, optimizer, l
     return model
 
 
+
 def evaluate_model(model, test_loader, device, test_only=False, prediction_path='./test_predictions.csv'):
     model.eval()
 
@@ -415,113 +416,170 @@ class MyModel(nn.Module):
 class BoostingEnsemble(nn.Module):
     def __init__(self, models, num_classes=5):
         super(BoostingEnsemble, self).__init__()
-        self.models = models  # List of models
+        self.models = nn.ModuleList(models)  # Convert to ModuleList for proper registration
         self.num_classes = num_classes
         self.boosting_model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1)
+        self.is_fitted = False
 
     def forward(self, x):
-        # Collect predictions from all models
-        all_preds = []
-        for model in self.models:
-            model.eval()  # Set model to evaluation mode
-            with torch.no_grad():
+        if not isinstance(x, list):
+            # For single image input
+            model_outputs = []
+            for model in self.models:
                 output = model(x)
-                preds = torch.argmax(output, dim=1)
-                all_preds.append(preds.cpu().numpy())
-        
-        # Convert to a format suitable for the boosting model
-        all_preds = np.array(all_preds).T  # Shape: (batch_size, num_models)
-        
-        return all_preds
+                model_outputs.append(output)
+            # Average the predictions from all models
+            ensemble_output = torch.mean(torch.stack(model_outputs), dim=0)
+            return ensemble_output
+        else:
+            # For dual image input (if your dataset returns a list of two images)
+            model_outputs = []
+            for model in self.models:
+                # Process each image separately and then combine
+                output1 = model(x[0])
+                output2 = model(x[1])
+                # Average the predictions for the two images
+                output = (output1 + output2) / 2
+                model_outputs.append(output)
+            # Average the predictions from all models
+            ensemble_output = torch.mean(torch.stack(model_outputs), dim=0)
+            return ensemble_output
 
-    def fit_boosting(self, X_train, y_train):
-        # Train the boosting model
+    def get_predictions_for_boosting(self, dataloader, device):
+        all_preds = []
+        all_labels = []
+        
+        for models in self.models:
+            models.eval()
+        
+        with torch.no_grad():
+            for images, labels in dataloader:
+                if isinstance(images, list):
+                    images = [img.to(device) for img in images]
+                else:
+                    images = images.to(device)
+                
+                batch_preds = []
+                for model in self.models:
+                    outputs = model(images)
+                    preds = torch.argmax(outputs, dim=1)
+                    batch_preds.append(preds.cpu().numpy())
+                
+                all_preds.append(np.array(batch_preds).T)
+                all_labels.extend(labels.cpu().numpy())
+        
+        return np.vstack(all_preds), np.array(all_labels)
+
+    def fit_boosting(self, train_loader, device):
+        X_train, y_train = self.get_predictions_for_boosting(train_loader, device)
         self.boosting_model.fit(X_train, y_train)
+        self.is_fitted = True
     
     def predict_boosting(self, X_test):
+        if not self.is_fitted:
+            raise RuntimeError("Boosting model must be fitted before making predictions")
         return self.boosting_model.predict(X_test)
-    
-    def evaluate_boosting(self, X_test, y_test):
-        y_pred = self.predict_boosting(X_test)
-        kappa = cohen_kappa_score(y_test, y_pred, weights='quadratic')
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-        recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-        
-        print(f'Boosting Kappa: {kappa:.4f} Accuracy: {accuracy:.4f} Precision: {precision:.4f} Recall: {recall:.4f}')
-        return kappa, accuracy, precision, recall
 
 
 
-def train_model_with_boosting(model, train_loader, val_loader, device, criterion, optimizer, lr_scheduler, num_epochs=25, checkpoint_path='model.pth'):
-    best_model = model.state_dict()
+def train_model_with_boosting(
+    model, train_loader, val_loader, device, criterion, optimizer, lr_scheduler, 
+    num_epochs=25, checkpoint_path='model.pth'
+):
+    best_model = copy.deepcopy(model.state_dict())
     best_epoch = None
     best_val_kappa = -1.0
 
-    all_train_preds = []
-    all_train_labels = []
+    # Move all models to device
+    model = model.to(device)
+    for m in model.models:
+        m = m.to(device)
 
-    for epoch in range(1, num_epochs + 1):
-        print(f'\nEpoch {epoch}/{num_epochs}')
+    for epoch in range(num_epochs):
+        print(f'\nEpoch {epoch + 1}/{num_epochs}')
         running_loss = []
+        all_train_preds = []
+        all_train_labels = []
 
+        # Training phase
         model.train()
-        with tqdm(total=len(train_loader), desc=f'Training', unit=' batch', file=sys.stdout) as pbar:
+        with tqdm(total=len(train_loader), desc='Training', unit=' batch') as pbar:
             for images, labels in train_loader:
-                images = images.to(device)
+                if isinstance(images, list):
+                    images = [img.to(device) for img in images]
+                else:
+                    images = images.to(device)
                 labels = labels.to(device)
 
                 optimizer.zero_grad()
-
                 outputs = model(images)
-                loss = criterion(outputs, labels.long())
-
+                loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
-                preds = torch.argmax(outputs, 1)
+                preds = torch.argmax(outputs, dim=1)
                 all_train_preds.extend(preds.cpu().numpy())
                 all_train_labels.extend(labels.cpu().numpy())
-
                 running_loss.append(loss.item())
+                
+                pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
                 pbar.update(1)
+
+        # Fit boosting model after each epoch
+        print("Fitting boosting model...")
+        model.fit_boosting(train_loader, device)
+
+        # Validation phase
+        model.eval()
+        val_preds = []
+        val_labels = []
+        
+        with torch.no_grad():
+            for images, labels in val_loader:
+                if isinstance(images, list):
+                    images = [img.to(device) for img in images]
+                else:
+                    images = images.to(device)
+                    
+                outputs = model(images)
+                preds = torch.argmax(outputs, dim=1)
+                val_preds.extend(preds.cpu().numpy())
+                val_labels.extend(labels.numpy())
+
+        # Calculate metrics
+        val_metrics = compute_metrics(val_preds, val_labels)
+        val_kappa = val_metrics[0]
+        print(f'[Val] Kappa: {val_kappa:.4f}')
+
+        if val_kappa > best_val_kappa:
+            best_val_kappa = val_kappa
+            best_epoch = epoch
+            best_model = copy.deepcopy(model.state_dict())
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': best_model,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+                'best_val_kappa': best_val_kappa
+            }, checkpoint_path)
 
         lr_scheduler.step()
 
-        epoch_loss = sum(running_loss) / len(running_loss)
-        train_metrics = compute_metrics(all_train_preds, all_train_labels)
-        kappa, accuracy, precision, recall = train_metrics[:4]
-        print(f'[Train] Kappa: {kappa:.4f} Accuracy: {accuracy:.4f} Precision: {precision:.4f} Recall: {recall:.4f} Loss: {epoch_loss:.4f}')
-
-        if len(train_metrics) > 4:
-            precision_per_class, recall_per_class = train_metrics[4:]
-            for i, (precision, recall) in enumerate(zip(precision_per_class, recall_per_class)):
-                print(f'[Train] Class {i}: Precision: {precision:.4f}, Recall: {recall:.4f}')
-
-    # Save the final model state
-    torch.save(model.state_dict(), checkpoint_path)
-    
-    return model  # Add this line to return the trained model
-
+    print(f'Best validation kappa: {best_val_kappa:.4f} (epoch {best_epoch + 1})')
+    return model
 
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
-    # This will affect the model definition, dataset pipeline, training and evaluation
-
- 
     mode = 'single'  # forward single image to the model each time 
-    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
-
     assert mode in ('single', 'dual')
 
-    # Define the model
-    if mode == 'single':
-        models = [MyModel() for _ in range(5)]
-    # else:
-    #     model = MyDualModel()
-
-    print(models, '\n')
+    # Create base models
+    base_models = [MyModel(num_classes=5) for _ in range(5)]
+    
+    # Create the ensemble model
+    ensemble_model = BoostingEnsemble(models=base_models, num_classes=5)
+    
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -534,44 +592,50 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    model = BoostingEnsemble(models=models)
     # Define the weighted CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
-    # Use GPU device is possible
+    # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)    
-    for model in models:
-        model = model.to(device)
 
-    model = BoostingEnsemble(models=models)
-    model = model.to(device)
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = f"backbone.{key}"  # Prefix with 'backbone.'
-        new_state_dict[new_key] = value
-    
-    model.load_state_dict(new_state_dict, strict=False)
-    
-    params = []
-    for model in models:
-        params += list(model.parameters())
+    # Move ensemble model to device
+    ensemble_model = ensemble_model.to(device)
 
-    # Optimizer and Learning rate scheduler
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
+    # Load pretrained weights if available
+    try:
+        state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location=device)
+        
+        # Modify state dict keys to match model structure
+        for model in ensemble_model.models:
+            new_state_dict = {}
+            for key, value in state_dict.items():
+                new_key = f"backbone.{key}"  # Prefix with 'backbone.'
+                new_state_dict[new_key] = value
+            
+            # Load state dict for each base model
+            model.load_state_dict(new_state_dict, strict=False)
+            print("Pretrained weights loaded successfully")
+    except Exception as e:
+        print(f"Could not load pretrained weights: {e}")
+        print("Starting with random initialization")
+
+    # Create optimizer for all parameters in the ensemble
+    optimizer = torch.optim.Adam(ensemble_model.parameters(), lr=learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-    # Train and evaluate the model with the training and validation set
-    model = train_model_with_boosting(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+    # Train and evaluate the model
+    trained_model = train_model_with_boosting(
+        ensemble_model,
+        train_loader, 
+        val_loader,
+        device,
+        criterion,
+        optimizer,
+        lr_scheduler=lr_scheduler,
+        num_epochs=num_epochs,
+        checkpoint_path='./model_vgg_ensemble.pth'
     )
 
-    # Load the pretrained checkpoint
-
-
-    # Make predictions on testing set and save the prediction results
-    evaluate_model(model, test_loader, device, test_only=True)
+    # Make predictions on testing set
+    evaluate_model(trained_model, test_loader, device, test_only=True)
