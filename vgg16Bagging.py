@@ -1,3 +1,5 @@
+# this file contains vgg16 running pretrained weights + self attention + all layers unfrozen + bagging
+
 import copy
 import os
 import random
@@ -11,14 +13,14 @@ from PIL import Image
 from sklearn.metrics import cohen_kappa_score, precision_score, recall_score, accuracy_score
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
-from torchvision.transforms.functional import to_pil_image
+from torchvision.transforms.functional import to_pil_image, adjust_gamma
 from tqdm import tqdm
-
+import torch.nn.functional as F
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 5
 
 
 class RetinopathyDataset(Dataset):
@@ -159,11 +161,13 @@ class FundRandomRotate:
         return img
 
 
+
 transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
-    FundRandomRotate(prob=0.5, degree=30),
+    # FundRandomRotate(prob=0.5, degree=30),
+    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
@@ -326,8 +330,37 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling parameter
+
+    def forward(self, x):
+        batch_size, C, H, W = x.size()  # Input feature map dimensions: (B, C, H, W)
+
+        # Query, Key, and Value transformations
+        query = self.query_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C//8)
+        key = self.key_conv(x).view(batch_size, -1, H * W)  # Shape: (B, C//8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C)
+
+        # Compute attention weights
+        attention = torch.bmm(query, key)  # Shape: (B, H*W, H*W)
+        attention = F.softmax(attention, dim=-1)  # Normalize attention weights across spatial dimensions
+
+        # Weighted sum of values
+        out = torch.bmm(attention, value).permute(0, 2, 1)  # Shape: (B, C, H*W)
+        out = out.view(batch_size, C, H, W)  # Reshape back to spatial dimensions
+
+        # Apply learnable scaling and residual connection
+        out = self.gamma * out + x
+        return out
+
+
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.51):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
         # Load the pretrained VGG16 model
@@ -336,6 +369,8 @@ class MyModel(nn.Module):
         # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
+            
+        self.self_attention = SelfAttention(in_channels=512)
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -353,27 +388,45 @@ class MyModel(nn.Module):
 
     def forward(self, x):
         # Forward pass through the VGG16 backbone
-        x = self.backbone(x)
+        features = self.backbone.features(x)
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
 
+
+class BaggingEnsemble(nn.Module):
+    def __init__(self, base_model, num_models, num_classes):
+        super(BaggingEnsemble, self).__init__()
+        self.models = nn.ModuleList([base_model for _ in range(num_models)])
+        self.num_models = num_models
+        self.num_classes = num_classes
+
+    def forward(self, x):
+        # Collect predictions from all models
+        outputs = torch.stack([model(x) for model in self.models], dim=0)  # Shape: (num_models, batch_size, num_classes)
+        # Average predictions across all models
+        ensemble_output = torch.mean(outputs, dim=0)  # Shape: (batch_size, num_classes)
+        return ensemble_output
 
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
-
- 
-    mode = 'single'  # forward single image to the model each time 
+    mode = 'single'  # forward single image to the model each time
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
-    # Define the model
-    if mode == 'single':
-        model = MyModel()
-    # else:
-    #     model = MyDualModel()
-
-    print(model, '\n')
+    # Define the ensemble
+    num_models = 5  # Number of models in the ensemble
+    ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
+    
+    print(ensemble, '\n')
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -389,37 +442,40 @@ if __name__ == '__main__':
     # Define the weighted CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
-    # Use GPU device is possible
+    # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
-    
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = f"backbone.{key}"  # Prefix with 'backbone.'
-        new_state_dict[new_key] = value
-    
-    model.load_state_dict(new_state_dict, strict=False)
-    
-    
+    ensemble = ensemble.to(device)
+    # Train each model in the ensemble
+    for idx, model in enumerate(ensemble.models):
+        print(f"Training model {idx + 1}/{num_models}")
 
-    # Move class weights to the device
-    model = model.to(device)
+        # Load pretrained weights for the model
+        state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
+        new_state_dict = {f"backbone.{key}": value for key, value in state_dict.items()}
+        model.load_state_dict(new_state_dict, strict=False)
 
-    # Optimizer and Learning rate scheduler
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        # Move model to the device
+        model = model.to(device)
 
-    # Train and evaluate the model with the training and validation set
-    model = train_model(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
-    )
+        # Optimizer and Learning rate scheduler
+        optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-    # Load the pretrained checkpoint
+        # Train and evaluate the model
+        model = train_model(
+            model, train_loader, val_loader, device, criterion, optimizer,
+            lr_scheduler=lr_scheduler, num_epochs=num_epochs,
+            checkpoint_path=f'./model_{idx + 1}.pth'
+        )
 
+        # Save the trained model's state
+        torch.save(model.state_dict(), f'./model_{idx + 1}_checkpoint.pth')
 
-    # Make predictions on testing set and save the prediction results
-    evaluate_model(model, test_loader, device, test_only=True)
+    # Load the trained models into the ensemble
+    for idx, model in enumerate(ensemble.models):
+        state_dict = torch.load(f'./model_{idx + 1}_checkpoint.pth', map_location='cpu')
+        model.load_state_dict(state_dict, strict=True)
+
+    # Make predictions on the test set using the ensemble
+    evaluate_model(ensemble, test_loader, device, test_only=True, prediction_path='./test_predictions.csv')

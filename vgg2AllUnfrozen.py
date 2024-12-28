@@ -13,12 +13,14 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+import torch.nn.functional as F
+from torchvision.transforms.functional import adjust_gamma 
 
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -163,10 +165,11 @@ transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
-    FundRandomRotate(prob=0.5, degree=30),
+    # FundRandomRotate(prob=0.5, degree=30),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
+    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -326,8 +329,51 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)  # Average pooling along channel axis
+        max_out, _ = torch.max(x, dim=1, keepdim=True)  # Max pooling along channel axis
+        x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
+        x = self.conv(x)  # Learn spatial importance
+        return self.sigmoid(x)  # Scale spatial importance
+    
+    
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling parameter
+
+    def forward(self, x):
+        batch_size, C, H, W = x.size()  # Input feature map dimensions: (B, C, H, W)
+
+        # Query, Key, and Value transformations
+        query = self.query_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C//8)
+        key = self.key_conv(x).view(batch_size, -1, H * W)  # Shape: (B, C//8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C)
+
+        # Compute attention weights
+        attention = torch.bmm(query, key)  # Shape: (B, H*W, H*W)
+        attention = F.softmax(attention, dim=-1)  # Normalize attention weights across spatial dimensions
+
+        # Weighted sum of values
+        out = torch.bmm(attention, value).permute(0, 2, 1)  # Shape: (B, C, H*W)
+        out = out.view(batch_size, C, H, W)  # Reshape back to spatial dimensions
+
+        # Apply learnable scaling and residual connection
+        out = self.gamma * out + x
+        return out
+
+
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.51):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
         # Load the pretrained VGG16 model
@@ -336,6 +382,8 @@ class MyModel(nn.Module):
         # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
+            
+        self.self_attention = SelfAttention(in_channels=512)
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -353,9 +401,49 @@ class MyModel(nn.Module):
 
     def forward(self, x):
         # Forward pass through the VGG16 backbone
-        x = self.backbone(x)
+        features = self.backbone.features(x)
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
 
+
+# class MyDualModel(nn.Module):
+#     def __init__(self, num_classes=5, dropout_rate=0.5):
+#         super().__init__()
+
+#         backbone = models.vgg16(init_weights=True)
+#         backbone.fc = nn.Identity()
+
+#         # Here the two backbones will have the same structure but unshared weights
+#         self.backbone1 = copy.deepcopy(backbone)
+#         self.backbone2 = copy.deepcopy(backbone)
+
+#         self.fc = nn.Sequential(
+#             nn.Linear(512 * 7 * 7 * 2 , 256),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(p=dropout_rate),
+#             nn.Linear(256, 128),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(p=dropout_rate),
+#             nn.Linear(128, num_classes)
+#         )
+
+    # def forward(self, images):
+    #     image1, image2 = images
+
+    #     x1 = self.backbone1.features(image1)
+    #     x2 = self.backbone2.features(image2)
+
+    #     x1 = torch.flatten(x1, start_dim=1) 
+    #     x2 = torch.flatten(x2, start_dim=1)
+    #     x = torch.cat((x1, x2), dim=1)
+    #     x = self.fc(x)
+    #     return x
 
 
 if __name__ == '__main__':
@@ -364,6 +452,7 @@ if __name__ == '__main__':
 
  
     mode = 'single'  # forward single image to the model each time 
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 

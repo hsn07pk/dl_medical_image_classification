@@ -13,12 +13,13 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+from sklearn.ensemble import GradientBoostingClassifier
 
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -329,18 +330,13 @@ def compute_metrics(preds, labels, per_class=False):
 class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.51):
         super().__init__()
-
-        # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
-        
-        # Unfreeze all layers
+
         for param in self.backbone.parameters():
             param.requires_grad = True
 
-        # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
-        
-        # Replace the classifier with a custom one
+
         self.backbone.classifier = nn.Sequential(
             nn.Linear(in_features, 256),
             nn.ReLU(inplace=True),
@@ -352,10 +348,85 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        # Forward pass through the VGG16 backbone
         x = self.backbone(x)
         return x
 
+
+def train_and_extract_features(model, train_loader, val_loader, device, criterion, optimizer, num_epochs=25):
+    model.train()
+    all_train_features, all_train_labels = [], []
+    
+    # Initialize the booster at the start
+    booster = GradientBoostingClassifier(
+        n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
+    )
+
+    for epoch in range(1, num_epochs + 1):
+        print(f'\nEpoch {epoch}/{num_epochs}')
+        running_loss = []
+        epoch_features = []
+        epoch_labels = []
+
+        with tqdm(total=len(train_loader), desc='Training', unit='batch', file=sys.stdout) as pbar:
+            for images, labels in train_loader:
+                images, labels = images.to(device), labels.to(device)
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels.long())
+                loss.backward()
+                optimizer.step()
+
+                running_loss.append(loss.item())
+                pbar.update(1)
+
+                # Collect features from the model for boosting
+                with torch.no_grad():
+                    features = outputs.cpu().numpy()
+                    epoch_features.append(features)
+                    epoch_labels.append(labels.cpu().numpy())
+
+        # Concatenate epoch features and labels
+        epoch_features = np.concatenate(epoch_features)
+        epoch_labels = np.concatenate(epoch_labels).flatten()
+        
+        # Add to overall features and labels
+        all_train_features.append(epoch_features)
+        all_train_labels.append(epoch_labels)
+
+        epoch_loss = sum(running_loss) / len(running_loss)
+        print(f'[Epoch {epoch}] Training Loss: {epoch_loss:.4f}')
+
+        # Validation at the end of each epoch
+        model.eval()
+        all_val_features, all_val_labels = [], []
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                all_val_features.append(outputs.cpu().numpy())
+                all_val_labels.append(labels.cpu().numpy())
+
+        val_features = np.concatenate(all_val_features)
+        val_labels = np.concatenate(all_val_labels)
+
+        # Train booster on accumulated features after each epoch
+        train_features_combined = np.concatenate(all_train_features)
+        train_labels_combined = np.concatenate(all_train_labels)
+        
+        booster.fit(train_features_combined, train_labels_combined)
+        
+        # Evaluate boosting
+        val_preds = booster.predict(val_features)
+        val_accuracy = accuracy_score(val_labels.flatten(), val_preds)
+        print(f'[Epoch {epoch}] Boosting Validation Accuracy: {val_accuracy:.4f}')
+
+    # Return final features and labels
+    final_train_features = np.concatenate(all_train_features)
+    final_train_labels = np.concatenate(all_train_labels)
+    final_val_features = val_features
+    final_val_labels = val_labels
+
+    return final_train_features, final_train_labels, final_val_features, final_val_labels
 
 
 if __name__ == '__main__':
@@ -412,13 +483,23 @@ if __name__ == '__main__':
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Train and evaluate the model with the training and validation set
-    model = train_model(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+    train_features, train_labels, val_features, val_labels = train_and_extract_features(
+        model, train_loader, val_loader, device, criterion, optimizer, num_epochs=num_epochs
     )
+    
 
     # Load the pretrained checkpoint
+    # Apply a boosting ensemble method
+    train_labels = train_labels.flatten()
+    val_labels = val_labels.flatten()
+
+    booster = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
+    booster.fit(train_features, train_labels)
+    val_preds = booster.predict(val_features)
+
+    # Evaluate
+    accuracy = accuracy_score(val_labels, val_preds)
+    print(f'Boosting Validation Accuracy: {accuracy:.4f}')
 
 
     # Make predictions on testing set and save the prediction results

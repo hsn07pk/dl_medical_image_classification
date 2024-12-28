@@ -326,16 +326,25 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+
+# only Last 5 layers unfrozen 
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.51):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
         # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
         
-        # Unfreeze all layers
+        # Freeze all layers by default
         for param in self.backbone.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
+
+        # Unfreeze the last 5 layers
+        # Unfreeze the last 5 layers from `features` and `classifier`
+        unfrozen_layers = list(self.backbone.features[-5:]) + list(self.backbone.classifier[-5:])
+        for layer in unfrozen_layers:
+            for param in layer.parameters():
+                param.requires_grad = True
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -357,6 +366,39 @@ class MyModel(nn.Module):
         return x
 
 
+# class MyDualModel(nn.Module):
+#     def __init__(self, num_classes=5, dropout_rate=0.5):
+#         super().__init__()
+
+#         backbone = models.vgg16(init_weights=True)
+#         backbone.fc = nn.Identity()
+
+#         # Here the two backbones will have the same structure but unshared weights
+#         self.backbone1 = copy.deepcopy(backbone)
+#         self.backbone2 = copy.deepcopy(backbone)
+
+#         self.fc = nn.Sequential(
+#             nn.Linear(512 * 7 * 7 * 2 , 256),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(p=dropout_rate),
+#             nn.Linear(256, 128),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(p=dropout_rate),
+#             nn.Linear(128, num_classes)
+#         )
+
+    # def forward(self, images):
+    #     image1, image2 = images
+
+    #     x1 = self.backbone1.features(image1)
+    #     x2 = self.backbone2.features(image2)
+
+    #     x1 = torch.flatten(x1, start_dim=1) 
+    #     x2 = torch.flatten(x2, start_dim=1)
+    #     x = torch.cat((x1, x2), dim=1)
+    #     x = self.fc(x)
+    #     return x
+
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
@@ -364,6 +406,7 @@ if __name__ == '__main__':
 
  
     mode = 'single'  # forward single image to the model each time 
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
