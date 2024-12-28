@@ -1,4 +1,4 @@
-# this file contains resnet 18 running pretrained weights + self attention + all layers unfrozen + bagging
+# this file contains vgg16 running pretrained weights + self attention + all layers unfrozen + bagging
 
 import copy
 import os
@@ -20,7 +20,7 @@ import torch.nn.functional as F
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 3
+num_epochs = 5
 
 
 class RetinopathyDataset(Dataset):
@@ -399,7 +399,6 @@ class MyModel(nn.Module):
         return x
 
 
-
 class BaggingEnsemble(nn.Module):
     def __init__(self, base_model, num_models, num_classes):
         super(BaggingEnsemble, self).__init__()
@@ -418,15 +417,14 @@ class BaggingEnsemble(nn.Module):
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
-    # mode = 'single'  # forward single image to the model each time
-    mode = 'dual'  # forward two images of the same eye to the model and fuse the features
+    mode = 'single'  # forward single image to the model each time
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
     # Define the ensemble
-    num_models = 15  # Number of models in the ensemble
-    ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
-    # ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
+    num_models = 5  # Number of models in the ensemble
+    ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
     
     print(ensemble, '\n')
     print('Pipeline Mode:', mode)
