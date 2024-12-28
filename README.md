@@ -133,6 +133,8 @@ NOTE: ADDING ATTENTION TO LAYERS 3 and 4 instead of all layers actually increase
 Resnet 18 with 20 ephos, 0.52 dropoff rate and ofc boosting
 Result: 79.59%
 
+Now trying another way of boosting:
+integrates boosting by extracting features from a deep learning model and then applying a traditional gradient boosting algorithm (GradientBoostingClassifier from scikit-learn). 
 
 
 

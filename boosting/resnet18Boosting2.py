@@ -567,6 +567,81 @@ def train_model_with_boosting(model, train_loader, val_loader, device, criterion
     
     return model, training_history
 
+def train_and_extract_features(model, train_loader, val_loader, device, criterion, optimizer, num_epochs=25):
+    model.train()
+    all_train_features, all_train_labels = [], []
+    
+    # Initialize the booster at the start
+    booster = GradientBoostingClassifier(
+        n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
+    )
+
+    for epoch in range(1, num_epochs + 1):
+        print(f'\nEpoch {epoch}/{num_epochs}')
+        running_loss = []
+        epoch_features = []
+        epoch_labels = []
+
+        with tqdm(total=len(train_loader), desc='Training', unit='batch', file=sys.stdout) as pbar:
+            for images, labels in train_loader:
+                images, labels = images.to(device), labels.to(device)
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels.long())
+                loss.backward()
+                optimizer.step()
+
+                running_loss.append(loss.item())
+                pbar.update(1)
+
+                # Collect features from the model for boosting
+                with torch.no_grad():
+                    features = outputs.cpu().numpy()
+                    epoch_features.append(features)
+                    epoch_labels.append(labels.cpu().numpy())
+
+        # Concatenate epoch features and labels
+        epoch_features = np.concatenate(epoch_features)
+        epoch_labels = np.concatenate(epoch_labels).flatten()
+        
+        # Add to overall features and labels
+        all_train_features.append(epoch_features)
+        all_train_labels.append(epoch_labels)
+
+        epoch_loss = sum(running_loss) / len(running_loss)
+        print(f'[Epoch {epoch}] Training Loss: {epoch_loss:.4f}')
+
+        # Validation at the end of each epoch
+        model.eval()
+        all_val_features, all_val_labels = [], []
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                all_val_features.append(outputs.cpu().numpy())
+                all_val_labels.append(labels.cpu().numpy())
+
+        val_features = np.concatenate(all_val_features)
+        val_labels = np.concatenate(all_val_labels)
+
+        # Train booster on accumulated features after each epoch
+        train_features_combined = np.concatenate(all_train_features)
+        train_labels_combined = np.concatenate(all_train_labels)
+        
+        booster.fit(train_features_combined, train_labels_combined)
+        
+        # Evaluate boosting
+        val_preds = booster.predict(val_features)
+        val_accuracy = accuracy_score(val_labels.flatten(), val_preds)
+        print(f'[Epoch {epoch}] Boosting Validation Accuracy: {val_accuracy:.4f}')
+
+    # Return final features and labels
+    final_train_features = np.concatenate(all_train_features)
+    final_train_labels = np.concatenate(all_train_labels)
+    final_val_features = val_features
+    final_val_labels = val_labels
+
+    return final_train_features, final_train_labels, final_val_features, final_val_labels
 
 
 if __name__ == '__main__':
@@ -575,16 +650,16 @@ if __name__ == '__main__':
 
  
     mode = 'single'  # forward single image to the model each time 
-    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
     # Define the model
     if mode == 'single':
-        models = [MyModel() for _ in range(5)]
+        model = MyModel()
     # else:
-        #     model = MyDualModel()
-    print(models, '\n')
+    #     model = MyDualModel()
+
+    print(model, '\n')
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -597,45 +672,49 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    model = BoostingEnsemble(models=models)
+    # Define the weighted CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
-    # Use GPU device if possible
+    # Use GPU device is possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('Device:', device)    
+    print('Device:', device)
     
-    for model in models:
-        model = model.to(device)
-
-    model = BoostingEnsemble(models=models)
-    model = model.to(device)
-    
-    # Load pretrained weights
     state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
+    
     new_state_dict = {}
     for key, value in state_dict.items():
-        new_key = f"backbone.{key}"
+        new_key = f"backbone.{key}"  # Prefix with 'backbone.'
         new_state_dict[new_key] = value
     
     model.load_state_dict(new_state_dict, strict=False)
     
-    params = []
-    for model in models:
-        params += list(model.parameters())
+    
+
+    # Move class weights to the device
+    model = model.to(device)
 
     # Optimizer and Learning rate scheduler
     optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-    # Train and evaluate the model
-    model, training_history = train_model_with_boosting(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./ensemble_model.pth'
+    # Train and evaluate the model with the training and validation set
+    train_features, train_labels, val_features, val_labels = train_and_extract_features(
+        model, train_loader, val_loader, device, criterion, optimizer, num_epochs=num_epochs
     )
     
-    state_dict = torch.load('./ensemble_model.pth', map_location='cpu')
-    model.load_state_dict(state_dict, strict=True)
+
+    # Load the pretrained checkpoint
+    # Apply a boosting ensemble method
+    train_labels = train_labels.flatten()
+    val_labels = val_labels.flatten()
+
+    booster = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
+    booster.fit(train_features, train_labels)
+    val_preds = booster.predict(val_features)
+
+    # Evaluate
+    accuracy = accuracy_score(val_labels, val_preds)
+    print(f'Boosting Validation Accuracy: {accuracy:.4f}')
 
 
     # Make predictions on testing set and save the prediction results
