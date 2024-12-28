@@ -38,3 +38,85 @@ Hints:
 For GPU computation resources, you can choose to use the CSC student project, Google Colab, and computer rooms in TS135.
 We encourage students to get code inspiration from GitHub. Please submit the zip file, which includes your code, trained model, and a readme.md file (explaining how to run the code). We also accept the code in notebook or Python script form.
 Students can create a Google link, upload the trained checkpoints there, and send the link when they submit the final project. You can choose to put the link in the report.
+
+
+___________________________________________________________________
+
+Things we tried
+
+
+Part a
+1. First tried to run all models including resnet18, resnet34, resnet 50, vgg, densenet in single and dual mode. we got the best output from vgg in single mode that was 83% kappa. 
+2. We tried to play with different preprocessing techniques like rotating the images, changing the color, applying gaussian noise, and other things like flips, Elastic TransformationsAutoAugment: Use libraries like torchvision.transforms.AutoAugment or RandAugment for automatic augmentation policies.
+* CutMix/MixUp: These techniques blend images and labels, improving generalization. But mostly things resulted in worse results rather than better results. 
+
+
+We started to systematically test the learning rate of models, we A/B tested reducing and increasing. Then we tested dropout rate with different values like 52, 49, 48, 60. We got better results at 52 with vgg, and resnet 50: 0.8419 kappa. 
+
+Then we tried running all models with dual mode to see difference in models with dual mode. We got: ResNet18 Base single mode: Best kappa: 0.8066, Epoch 19
+Dual Mode: Best kappa: 0.7777, Epoch 17
+
+ resnet34: Best kappa: 0.7758, Epoch 9
+ resnet34 Dual Mode Best kappa: 0.8088 Epoch 5
+
+
+Then we tried to visualize the data to understand why are we getting relatively low results for class 3,4. We realized after visualizing the data that the samples of class 0 are the most in the dataset and other classes are relatively under represented. So we tried to run SMOTE but that’s not possible with image data so we though maybe it’ll be a good idea to Dynamic Oversampling: Use weighted sampling to address imbalance during training.
+We had our base results for res18: Best kappa: 0.7777,So we ran res18 with the dynamic oversampling for 10 epos: we got Best kappa: 0.7618, Epoch 7. So dynamic oversampling was not the answer. 
+
+
+
+For part B, we unfroze all the layers of the model and loaded the weights of vgg and used the vgg model. We got results of around 86.35. We also removed fundrandomrotate from the preprocessing. 
+
+
+We tried to keep all the layers unfrozen except the last 5 layers: we got: 83.56 
+
+Then we tried to only unfreeze last 5 layers, we got: 82.81% not very good. 
+
+
+Part c: we implemented spatial attention. 	
+•	because these mechanisms help the model focus on important regions of the retina, such as lesions or abnormalities.
+Result: 83.17% not a very impressive improvement
+
+
+tried self attention mechanism improved a little to : 84. 42%
+
+
+We implemented ensemble learning Boosting: we got 85.02% on the test case. We tried same boosting but on vgg that had frozen layers: we got 83.72% results 
+
+We improved the code on vgg also with frozen layers again: we got: 
+
+
+We added an augmentation to vgg all layers unfrozen: 
+transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
+
+- gamma correction and we got: 83.87
+
+resnet 18: tried unfrozen layers and self attention mechanism with preloaded weights on the big dataset and then fine tuned on the main dataset: we got 83.98 and 83.49
+
+
+resnet 18. implemented bagging ensemble with pretrained weights, and unfrozen layers + self attention mechanism. 5 model bagging: result: with 2 ephos: 86.88 
+tried same thing with 15 ephos: got 82.11
+
+res18 tried 3 ephos with 10 models: 85.05
+resnet 18 3 ephos with 3 models: 84.24
+
+same: but without attention and with all layers frozen: 83.09%
+
+
+means we should keep these 2 on. 
+
+
+Now trying resnet 18 with dual mode with attention mechanism and unfrozen layers: bagging 5 models with 6 ephos per modelResult: 78.48. Not gonna try dual again. not worth it. 
+
+
+Next: tried resnet 34 with self attention mechanism and unfrozen layers: got 79.05 
+
+tried to improve by adding focul loss function to criterion: res: 84.14 
+
+Tried VGG16 with bagging (all layers unfrozen, self attention added):res: 84:63
+
+
+
+
+
+
