@@ -20,7 +20,7 @@ import torch.nn.functional as F
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 3
+num_epochs = 5
 
 
 class RetinopathyDataset(Dataset):
@@ -363,7 +363,7 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
-        self.backbone = models.resnet18(pretrained=True)
+        self.backbone = models.resnet34(pretrained=True)
         # Get the input features for the classifier dynamically
         in_features = self.backbone.fc.in_features
 
@@ -507,15 +507,15 @@ class BaggingEnsemble(nn.Module):
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
-    # mode = 'single'  # forward single image to the model each time
-    mode = 'dual'  # forward two images of the same eye to the model and fuse the features
+    mode = 'single'  # forward single image to the model each time
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
     # Define the ensemble
-    num_models = 15  # Number of models in the ensemble
-    ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
-    # ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
+    num_models = 5  # Number of models in the ensemble
+    # ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
+    ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
     
     print(ensemble, '\n')
     print('Pipeline Mode:', mode)
@@ -542,7 +542,7 @@ if __name__ == '__main__':
         print(f"Training model {idx + 1}/{num_models}")
 
         # Load pretrained weights for the model
-        state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
+        state_dict = torch.load('./pre/pretrained/resnet34.pth', map_location='cpu')
         new_state_dict = {f"backbone.{key}": value for key, value in state_dict.items()}
         model.load_state_dict(new_state_dict, strict=False)
 
