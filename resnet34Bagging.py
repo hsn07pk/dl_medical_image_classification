@@ -20,7 +20,7 @@ import torch.nn.functional as F
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 5
+num_epochs = 2
 
 
 class RetinopathyDataset(Dataset):
@@ -372,6 +372,10 @@ class MyModel(nn.Module):
 
         # Self-attention layer (applied to intermediate feature maps)
         self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
+
+
 
         # Replace the classifier with a custom one
         self.backbone.fc = nn.Sequential(
@@ -393,11 +397,17 @@ class MyModel(nn.Module):
 
         x = self.backbone.layer1(x)
         x = self.backbone.layer2(x)
+        # x = self.backbone.layer3(x)
+        # x = self.backbone.layer4(x)
+
         x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
+
         x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
 
         # Apply self-attention to the feature maps
-        x = self.self_attention(x)
+        # x = self.self_attention(x)
 
         # Apply global average pooling
         x = self.backbone.avgpool(x)
@@ -408,85 +418,6 @@ class MyModel(nn.Module):
         return x
 
 
-class MyDualModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.52):
-        super().__init__()
-
-        # Define the first backbone
-        backbone1 = models.resnet18(pretrained=True)
-        in_features = backbone1.fc.in_features
-
-        for param in backbone1.parameters():
-            param.requires_grad = True
-
-        self.self_attention1 = SelfAttention(in_channels=512)
-        backbone1.fc = nn.Identity()
-        self.backbone1 = copy.deepcopy(backbone1)
-
-        # Define the second backbone
-        backbone2 = models.resnet18(pretrained=True)
-
-        for param in backbone2.parameters():
-            param.requires_grad = True
-
-        self.self_attention2 = SelfAttention(in_channels=512)
-        backbone2.fc = nn.Identity()
-        self.backbone2 = copy.deepcopy(backbone2)
-
-        # Define the shared classifier
-        self.fc = nn.Sequential(
-            nn.Linear(512 * 2, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(128, num_classes)
-        )
-
-    def forward(self, images):
-        image1, image2 = images
-
-        # Pass image1 through the first backbone
-        x1 = self.backbone1.conv1(image1)
-        x1 = self.backbone1.bn1(x1)
-        x1 = self.backbone1.relu(x1)
-        x1 = self.backbone1.maxpool(x1)
-
-        x1 = self.backbone1.layer1(x1)
-        x1 = self.backbone1.layer2(x1)
-        x1 = self.backbone1.layer3(x1)
-        x1 = self.backbone1.layer4(x1)
-
-        # Apply self-attention to the feature maps from the first backbone
-        x1 = self.self_attention1(x1)
-
-        # Apply global average pooling to the first backbone output
-        x1 = self.backbone1.avgpool(x1)
-        x1 = torch.flatten(x1, 1)
-
-        # Pass image2 through the second backbone
-        x2 = self.backbone2.conv1(image2)
-        x2 = self.backbone2.bn1(x2)
-        x2 = self.backbone2.relu(x2)
-        x2 = self.backbone2.maxpool(x2)
-
-        x2 = self.backbone2.layer1(x2)
-        x2 = self.backbone2.layer2(x2)
-        x2 = self.backbone2.layer3(x2)
-        x2 = self.backbone2.layer4(x2)
-
-        # Apply self-attention to the feature maps from the second backbone
-        x2 = self.self_attention2(x2)
-
-        # Apply global average pooling to the second backbone output
-        x2 = self.backbone2.avgpool(x2)
-        x2 = torch.flatten(x2, 1)
-
-        # Concatenate the outputs from both backbones and pass through the classifier
-        x = torch.cat((x1, x2), dim=1)
-        x = self.fc(x)
-        return x
     
 
 class BaggingEnsemble(nn.Module):
@@ -502,6 +433,37 @@ class BaggingEnsemble(nn.Module):
         # Average predictions across all models
         ensemble_output = torch.mean(outputs, dim=0)  # Shape: (batch_size, num_classes)
         return ensemble_output
+    
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)  # Probability of correct class
+        focal_loss = self.alpha * ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
+    
+
+def weighted_ensemble_predictions(ensemble, weights, dataloader, device):
+    assert len(ensemble.models) == len(weights), "Mismatch between models and weights"
+    predictions = []
+    
+    # Set models to evaluation mode
+    for model in ensemble.models:
+        model.eval()
+
+    with torch.no_grad():
+        for data in dataloader:
+            images, labels, _ = data  # Adjust unpacking if more than two elements
+            images = images.to(device)
+            outputs = [weight * F.softmax(model(images), dim=1) for model, weight in zip(ensemble.models, weights)]
+            ensemble_output = sum(outputs)
+            predictions.append(ensemble_output.argmax(dim=1).cpu().numpy())
+    
+    return np.concatenate(predictions)
 
 
 if __name__ == '__main__':
@@ -509,7 +471,7 @@ if __name__ == '__main__':
     # This will affect the model definition, dataset pipeline, training and evaluation
     mode = 'single'  # forward single image to the model each time
     # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
-
+    weights = [0.2, 0.2, 0.2, 0.2, 0.2] #TODO has to be according to the no of models  
     assert mode in ('single', 'dual')
 
     # Define the ensemble
@@ -531,7 +493,8 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Define the weighted CrossEntropyLoss
-    criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
+    criterion = FocalLoss(alpha=0.25, gamma=2)
 
     # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -570,3 +533,10 @@ if __name__ == '__main__':
 
     # Make predictions on the test set using the ensemble
     evaluate_model(ensemble, test_loader, device, test_only=True, prediction_path='./test_predictions.csv')
+
+    ensemble_predictions = weighted_ensemble_predictions(ensemble, weights, test_loader, device)
+    
+    # Optionally, save the predictions to a CSV
+    predictions_df = pd.DataFrame(ensemble_predictions, columns=['Predicted Class'])
+    predictions_df.to_csv('./ensemble_predictions.csv', index=False)
+    print("Predictions saved to './ensemble_predictions.csv'")
