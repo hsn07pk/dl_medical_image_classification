@@ -20,7 +20,7 @@ import torch.nn.functional as F
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 2
+num_epochs = 3
 
 
 class RetinopathyDataset(Dataset):
@@ -363,22 +363,20 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
-        self.backbone = models.resnet34(pretrained=True)
-        # Get the input features for the classifier dynamically
-        in_features = self.backbone.fc.in_features
-
+        # Load the pretrained VGG16 model
+        self.backbone = models.vgg16(pretrained=True)
+        
+        # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
-
-        # Self-attention layer (applied to intermediate feature maps)
+            
         self.self_attention = SelfAttention(in_channels=512)
-        self.self_attention3 = SelfAttention(in_channels=256)
-        self.self_attention4 = SelfAttention(in_channels=512)
 
-
-
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.classifier[0].in_features
+        
         # Replace the classifier with a custom one
-        self.backbone.fc = nn.Sequential(
+        self.backbone.classifier = nn.Sequential(
             nn.Linear(in_features, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
@@ -389,36 +387,18 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        # Extract intermediate feature maps from the backbone
-        x = self.backbone.conv1(x)
-        x = self.backbone.bn1(x)
-        x = self.backbone.relu(x)
-        x = self.backbone.maxpool(x)
+        # Forward pass through the VGG16 backbone
+        features = self.backbone.features(x)
 
-        x = self.backbone.layer1(x)
-        x = self.backbone.layer2(x)
-        # x = self.backbone.layer3(x)
-        # x = self.backbone.layer4(x)
+        # Apply self-attention
+        features = self.self_attention(features)
 
-        x = self.backbone.layer3(x)
-        x = self.self_attention3(x)
-
-        x = self.backbone.layer4(x)
-        x = self.self_attention4(x)
-
-        # Apply self-attention to the feature maps
-        # x = self.self_attention(x)
-
-        # Apply global average pooling
-        x = self.backbone.avgpool(x)
-        x = torch.flatten(x, 1)  # Flatten to (B, 512)
-
-        # Pass through the classifier
-        x = self.backbone.fc(x)
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
 
 
-    
 
 class BaggingEnsemble(nn.Module):
     def __init__(self, base_model, num_models, num_classes):
@@ -433,60 +413,20 @@ class BaggingEnsemble(nn.Module):
         # Average predictions across all models
         ensemble_output = torch.mean(outputs, dim=0)  # Shape: (batch_size, num_classes)
         return ensemble_output
-    
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=1, gamma=2):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-        pt = torch.exp(-ce_loss)  # Probability of correct class
-        focal_loss = self.alpha * ((1 - pt) ** self.gamma) * ce_loss
-        return focal_loss.mean()
-    
-
-# def weighted_ensemble_predictions(ensemble, weights, dataloader, device):
-#     assert len(ensemble.models) == len(weights), "Mismatch between models and weights"
-#     predictions = []
-    
-#     # Set models to evaluation mode
-#     for model in ensemble.models:
-#         model.eval()
-
-#     with torch.no_grad():
-#         for data in dataloader:
-#             # Dynamically unpack the data
-#             images = data[0]  # First element should be images
-#             labels = data[1] if len(data) > 1 else None  # Second element if available
-            
-#             # Ensure images have the correct shape
-#             if images.ndim == 3:  # Single image without batch dimension
-#                 images = images.unsqueeze(0)  # Add batch dimension
-#             images = images.to(device)
-            
-#             outputs = [
-#                 weight * F.softmax(model(images), dim=1) 
-#                 for model, weight in zip(ensemble.models, weights)
-#             ]
-#             ensemble_output = sum(outputs)
-#             predictions.append(ensemble_output.argmax(dim=1).cpu().numpy())
-    
-#     return np.concatenate(predictions)
 
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
-    mode = 'single'  # Forward single image to the model each time
-    # mode = 'dual'  # Forward two images of the same eye to the model and fuse the features
-    weights = [0.2, 0.2, 0.2, 0.2, 0.2]  # TODO: Adjust according to the number of models
+    # This will affect the model definition, dataset pipeline, training and evaluation
+    # mode = 'single'  # forward single image to the model each time
+    mode = 'dual'  # forward two images of the same eye to the model and fuse the features
+
     assert mode in ('single', 'dual')
 
     # Define the ensemble
-    num_models = 5  # Number of models in the ensemble
-    # ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
-    ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
+    num_models = 15  # Number of models in the ensemble
+    ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
+    # ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
     
     print(ensemble, '\n')
     print('Pipeline Mode:', mode)
@@ -502,19 +442,18 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Define the weighted CrossEntropyLoss
-    criterion = FocalLoss(alpha=0.25, gamma=2)
+    criterion = nn.CrossEntropyLoss()
 
     # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
     ensemble = ensemble.to(device)
-    
     # Train each model in the ensemble
     for idx, model in enumerate(ensemble.models):
         print(f"Training model {idx + 1}/{num_models}")
 
         # Load pretrained weights for the model
-        state_dict = torch.load('./pre/pretrained/resnet34.pth', map_location='cpu')
+        state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
         new_state_dict = {f"backbone.{key}": value for key, value in state_dict.items()}
         model.load_state_dict(new_state_dict, strict=False)
 
@@ -542,5 +481,3 @@ if __name__ == '__main__':
 
     # Make predictions on the test set using the ensemble
     evaluate_model(ensemble, test_loader, device, test_only=True, prediction_path='./test_predictions.csv')
-
-
