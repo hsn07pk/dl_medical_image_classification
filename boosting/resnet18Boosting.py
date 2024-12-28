@@ -20,7 +20,7 @@ import torch.nn.functional as F
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 3
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -372,6 +372,8 @@ class MyModel(nn.Module):
 
         # Self-attention layer (applied to intermediate feature maps)
         self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
 
         # Replace the classifier with a custom one
         self.backbone.fc = nn.Sequential(
@@ -394,10 +396,12 @@ class MyModel(nn.Module):
         x = self.backbone.layer1(x)
         x = self.backbone.layer2(x)
         x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
         x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
 
         # Apply self-attention to the feature maps
-        x = self.self_attention(x)
+        # x = self.self_attention(x)
 
         # Apply global average pooling
         x = self.backbone.avgpool(x)
@@ -430,31 +434,34 @@ class BoostingEnsemble(nn.Module):
         self.models = nn.ModuleList([base_model for _ in range(num_models)])
         self.num_models = num_models
         self.num_classes = num_classes
-        self.alphas = []  # Stores weights of each model
+        self.alphas = nn.ParameterList([nn.Parameter(torch.tensor(0.0)) for _ in range(num_models)])
 
     def forward(self, x):
         ensemble_output = torch.zeros(x.size(0), self.num_classes).to(x.device)  # Initialize ensemble output
         for model, alpha in zip(self.models, self.alphas):
             output = model(x)
-            ensemble_output += alpha * output  # Weighted sum of predictions
+            ensemble_output += torch.exp(alpha) * output  # Weighted sum of predictions
         return ensemble_output
-    
 
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
+
     mode = 'single'  # forward single image to the model each time
     # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
-    # Define the ensemble
-    num_models = 15  # Number of models in the ensemble
-    # ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
-    ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
-    
-    print(ensemble, '\n')
+    # Define the base model
+    base_model = MyModel(num_classes=5)
+    num_models = 5  # Number of models in the ensemble
+    num_classes = 5  # Number of output classes
+
+    # Create the boosting ensemble
+    model = BoostingEnsemble(base_model, num_models=num_models, num_classes=num_classes)
+
+    print(model, '\n')
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -473,37 +480,27 @@ if __name__ == '__main__':
     # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
-    ensemble = ensemble.to(device)
-    # Train each model in the ensemble
-    for idx, model in enumerate(ensemble.models):
-        print(f"Training model {idx + 1}/{num_models}")
+    
+    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
+    model.load_state_dict(state_dict, strict=False)
 
-        # Load pretrained weights for the model
-        state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
-        new_state_dict = {f"backbone.{key}": value for key, value in state_dict.items()}
-        model.load_state_dict(new_state_dict, strict=False)
+    # Move model and criterion to the device
+    model = model.to(device)
 
-        # Move model to the device
-        model = model.to(device)
+    # Optimizer and Learning rate scheduler
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-        # Optimizer and Learning rate scheduler
-        optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    # Train and evaluate the model with the training and validation set
+    model = train_model(
+        model, train_loader, val_loader, device, criterion, optimizer,
+        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
+        checkpoint_path='./ensemble_model.pth'
+    )
 
-        # Train and evaluate the model
-        model = train_model(
-            model, train_loader, val_loader, device, criterion, optimizer,
-            lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-            checkpoint_path=f'./model_{idx + 1}.pth'
-        )
+    # Load the pretrained checkpoint
+    state_dict = torch.load('./ensemble_model.pth', map_location='cpu')
+    model.load_state_dict(state_dict, strict=True)
 
-        # Save the trained model's state
-        torch.save(model.state_dict(), f'./model_{idx + 1}_checkpoint.pth')
-
-    # Load the trained models into the ensemble
-    for idx, model in enumerate(ensemble.models):
-        state_dict = torch.load(f'./model_{idx + 1}_checkpoint.pth', map_location='cpu')
-        model.load_state_dict(state_dict, strict=True)
-
-    # Make predictions on the test set using the ensemble
-    evaluate_model(ensemble, test_loader, device, test_only=True, prediction_path='./test_predictions.csv')
+    # Make predictions on testing set and save the prediction results
+    evaluate_model(model, test_loader, device, test_only=True)

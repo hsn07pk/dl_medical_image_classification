@@ -128,6 +128,13 @@ transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.
 
 ## Resnet 18
 
+NOTE: ADDING ATTENTION TO LAYERS 3 and 4 instead of all layers actually increases the results
+
+Resnet 18 with 20 ephos, 0.52 dropoff rate and ofc boosting
+Result: 79.59%
+
+
+
 
 
 ## Resnet 34
