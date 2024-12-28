@@ -457,7 +457,9 @@ def weighted_ensemble_predictions(ensemble, weights, dataloader, device):
 
     with torch.no_grad():
         for data in dataloader:
-            images, labels, _ = data  # Adjust unpacking if more than two elements
+            # Dynamically unpack the data
+            images = data[0]  # First element should be images
+            labels = data[1] if len(data) > 1 else None  # Second element if available
             images = images.to(device)
             outputs = [weight * F.softmax(model(images), dim=1) for model, weight in zip(ensemble.models, weights)]
             ensemble_output = sum(outputs)
@@ -468,10 +470,9 @@ def weighted_ensemble_predictions(ensemble, weights, dataloader, device):
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
-    # This will affect the model definition, dataset pipeline, training and evaluation
-    mode = 'single'  # forward single image to the model each time
-    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
-    weights = [0.2, 0.2, 0.2, 0.2, 0.2] #TODO has to be according to the no of models  
+    mode = 'single'  # Forward single image to the model each time
+    # mode = 'dual'  # Forward two images of the same eye to the model and fuse the features
+    weights = [0.2, 0.2, 0.2, 0.2, 0.2]  # TODO: Adjust according to the number of models
     assert mode in ('single', 'dual')
 
     # Define the ensemble
@@ -493,13 +494,13 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Define the weighted CrossEntropyLoss
-    # criterion = nn.CrossEntropyLoss()
     criterion = FocalLoss(alpha=0.25, gamma=2)
 
     # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
     ensemble = ensemble.to(device)
+    
     # Train each model in the ensemble
     for idx, model in enumerate(ensemble.models):
         print(f"Training model {idx + 1}/{num_models}")
