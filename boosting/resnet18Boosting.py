@@ -1,4 +1,4 @@
-# this file contains resnet 18 running pretrained weights + self attention + all layers unfrozen + bagging
+# this file contains resnet 18 running pretrained weights + self attention + all layers unfrozen + Boosting
 
 import copy
 import os
@@ -408,114 +408,51 @@ class MyModel(nn.Module):
         return x
 
 
-class MyDualModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.52):
-        super().__init__()
 
-        # Define the first backbone
-        backbone1 = models.resnet18(pretrained=True)
-        in_features = backbone1.fc.in_features
 
-        for param in backbone1.parameters():
-            param.requires_grad = True
+# class BaggingEnsemble(nn.Module):
+#     def __init__(self, base_model, num_models, num_classes):
+#         super(BaggingEnsemble, self).__init__()
+#         self.models = nn.ModuleList([base_model for _ in range(num_models)])
+#         self.num_models = num_models
+#         self.num_classes = num_classes
 
-        self.self_attention1 = SelfAttention(in_channels=512)
-        backbone1.fc = nn.Identity()
-        self.backbone1 = copy.deepcopy(backbone1)
+#     def forward(self, x):
+#         # Collect predictions from all models
+#         outputs = torch.stack([model(x) for model in self.models], dim=0)  # Shape: (num_models, batch_size, num_classes)
+#         # Average predictions across all models
+#         ensemble_output = torch.mean(outputs, dim=0)  # Shape: (batch_size, num_classes)
+#         return ensemble_output
 
-        # Define the second backbone
-        backbone2 = models.resnet18(pretrained=True)
-
-        for param in backbone2.parameters():
-            param.requires_grad = True
-
-        self.self_attention2 = SelfAttention(in_channels=512)
-        backbone2.fc = nn.Identity()
-        self.backbone2 = copy.deepcopy(backbone2)
-
-        # Define the shared classifier
-        self.fc = nn.Sequential(
-            nn.Linear(512 * 2, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(128, num_classes)
-        )
-
-    def forward(self, images):
-        image1, image2 = images
-
-        # Pass image1 through the first backbone
-        x1 = self.backbone1.conv1(image1)
-        x1 = self.backbone1.bn1(x1)
-        x1 = self.backbone1.relu(x1)
-        x1 = self.backbone1.maxpool(x1)
-
-        x1 = self.backbone1.layer1(x1)
-        x1 = self.backbone1.layer2(x1)
-        x1 = self.backbone1.layer3(x1)
-        x1 = self.backbone1.layer4(x1)
-
-        # Apply self-attention to the feature maps from the first backbone
-        x1 = self.self_attention1(x1)
-
-        # Apply global average pooling to the first backbone output
-        x1 = self.backbone1.avgpool(x1)
-        x1 = torch.flatten(x1, 1)
-
-        # Pass image2 through the second backbone
-        x2 = self.backbone2.conv1(image2)
-        x2 = self.backbone2.bn1(x2)
-        x2 = self.backbone2.relu(x2)
-        x2 = self.backbone2.maxpool(x2)
-
-        x2 = self.backbone2.layer1(x2)
-        x2 = self.backbone2.layer2(x2)
-        x2 = self.backbone2.layer3(x2)
-        x2 = self.backbone2.layer4(x2)
-
-        # Apply self-attention to the feature maps from the second backbone
-        x2 = self.self_attention2(x2)
-
-        # Apply global average pooling to the second backbone output
-        x2 = self.backbone2.avgpool(x2)
-        x2 = torch.flatten(x2, 1)
-
-        # Concatenate the outputs from both backbones and pass through the classifier
-        x = torch.cat((x1, x2), dim=1)
-        x = self.fc(x)
-        return x
-    
-
-class BaggingEnsemble(nn.Module):
+class BoostingEnsemble(nn.Module):
     def __init__(self, base_model, num_models, num_classes):
-        super(BaggingEnsemble, self).__init__()
+        super(BoostingEnsemble, self).__init__()
         self.models = nn.ModuleList([base_model for _ in range(num_models)])
         self.num_models = num_models
         self.num_classes = num_classes
+        self.alphas = []  # Stores weights of each model
 
     def forward(self, x):
-        # Collect predictions from all models
-        outputs = torch.stack([model(x) for model in self.models], dim=0)  # Shape: (num_models, batch_size, num_classes)
-        # Average predictions across all models
-        ensemble_output = torch.mean(outputs, dim=0)  # Shape: (batch_size, num_classes)
+        ensemble_output = torch.zeros(x.size(0), self.num_classes).to(x.device)  # Initialize ensemble output
+        for model, alpha in zip(self.models, self.alphas):
+            output = model(x)
+            ensemble_output += alpha * output  # Weighted sum of predictions
         return ensemble_output
+    
 
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
-    # mode = 'single'  # forward single image to the model each time
-    mode = 'dual'  # forward two images of the same eye to the model and fuse the features
+    mode = 'single'  # forward single image to the model each time
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
     # Define the ensemble
     num_models = 15  # Number of models in the ensemble
-    ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
-    # ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
+    # ensemble = BaggingEnsemble(MyDualModel(num_classes=5), num_models, num_classes=5)
+    ensemble = BaggingEnsemble(MyModel(num_classes=5), num_models, num_classes=5)
     
     print(ensemble, '\n')
     print('Pipeline Mode:', mode)
