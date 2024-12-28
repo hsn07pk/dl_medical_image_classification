@@ -81,20 +81,18 @@ Result: 83.17% not a very impressive improvement
 tried self attention mechanism improved a little to : 84. 42%
 
 
-We implemented ensemble learning Boosting: we got 85.02% on the test case. We tried same boosting but on vgg that had frozen layers: we got 83.72% results 
-
-We improved the code on vgg also with frozen layers again: we got: 
 
 
-We added an augmentation to vgg all layers unfrozen: 
-transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
-
-- gamma correction and we got: 83.87
 
 resnet 18: tried unfrozen layers and self attention mechanism with preloaded weights on the big dataset and then fine tuned on the main dataset: we got 83.98 and 83.49
 
 
-resnet 18. implemented bagging ensemble with pretrained weights, and unfrozen layers + self attention mechanism. 5 model bagging: result: with 2 ephos: 86.88 
+part d... Stacking, Boosting, Weighted Average, Max Voting, Bagging
+
+# BAGGING
+
+## resnet 18
+implemented bagging ensemble with pretrained weights, and unfrozen layers + self attention mechanism. 5 model bagging: result: with 2 ephos: 86.88 
 tried same thing with 15 ephos: got 82.11
 
 res18 tried 3 ephos with 10 models: 85.05
@@ -108,15 +106,58 @@ means we should keep these 2 on.
 
 Now trying resnet 18 with dual mode with attention mechanism and unfrozen layers: bagging 5 models with 6 ephos per modelResult: 78.48. Not gonna try dual again. not worth it. 
 
-
+## resnet 34
 Next: tried resnet 34 with self attention mechanism and unfrozen layers: got 79.05 
 
 tried to improve by adding focul loss function to criterion: res: 84.14 
-
+## vgg 16
 Tried VGG16 with bagging (all layers unfrozen, self attention added):res: 84:63
 
 
+# BOOSTING
 
+## VGG16
+We implemented ensemble learning Boosting: we got 85.02% on the test case. We tried same boosting but on vgg that had frozen layers: we got 83.72% results 
+
+We improved the code on vgg also with frozen layers again: we got: 
+
+We added an augmentation to vgg all layers unfrozen: 
+transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
+
+- gamma correction and we got: 83.87
+
+## Resnet 18
+
+
+
+## Resnet 34
+
+
+# Stacking
+
+
+## VGG16
+
+## Resnet 18
+
+## Resnet 34
+
+
+# Weighted Average
+
+## VGG16
+
+## Resnet 18
+
+## Resnet 34
+
+# Max Voting
+
+## VGG16
+
+## Resnet 18
+
+## Resnet 34
 
 
 
