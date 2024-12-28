@@ -13,7 +13,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
-import torch.nn.functional as F 
+import torch.nn.functional as F
+from torchvision.transforms.functional import adjust_gamma 
 
 # Hyper Parameters
 batch_size = 24
@@ -168,6 +169,7 @@ transform_train = transforms.Compose([
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
+    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
