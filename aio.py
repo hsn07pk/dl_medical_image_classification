@@ -281,7 +281,9 @@ def train_model(model, train_loader, val_loader, device, criterion, optimizer, l
         'val_loss': [],
         'train_accuracy': [],
         'val_accuracy': [],
-        'learning_rates': []  # Add learning rate tracking
+        'train_kappa': [],
+        'val_kappa': [],
+        'learning_rates': []
     }
     
     for epoch in range(1, num_epochs + 1):
@@ -301,22 +303,12 @@ def train_model(model, train_loader, val_loader, device, criterion, optimizer, l
                     labels = labels.to(device)
 
                     optimizer.zero_grad()
-                    
-                    # Ensure model is in train mode
-                    model.train()
-                    
                     outputs = model(images)
                     loss = criterion(outputs, labels)
-                    
-                    # Check if loss requires grad
-                    if not loss.requires_grad:
-                        raise RuntimeError("Loss doesn't require grad. Check model parameters.")
-                        
                     loss.backward()
                     optimizer.step()
 
                     preds = torch.argmax(outputs, 1)
-                    
                     running_loss.append(loss.item())
                     all_preds.extend(preds.cpu().numpy())
                     all_labels.extend(labels.cpu().numpy())
@@ -327,33 +319,46 @@ def train_model(model, train_loader, val_loader, device, criterion, optimizer, l
                     })
                     pbar.update(1)
 
-                except RuntimeError as e:
+                except Exception as e:
                     print(f"Error in batch {batch_idx}: {str(e)}")
                     continue
 
-        # Store learning rate
-        training_history['learning_rates'].append(optimizer.param_groups[0]['lr'])
-        
-        lr_scheduler.step()
-
+        # Calculate training metrics
         epoch_loss = np.mean(running_loss)
         train_metrics = compute_metrics(all_preds, all_labels)
-        
+        training_history['train_loss'].append(epoch_loss)
+        training_history['train_accuracy'].append(train_metrics[1])
+        training_history['train_kappa'].append(train_metrics[0])
+        training_history['learning_rates'].append(optimizer.param_groups[0]['lr'])
+
         # Validation phase
         model.eval()
         val_metrics = evaluate_model(model, val_loader, device)
         val_kappa = val_metrics[0]
-
-        # Update training history
-        training_history['train_loss'].append(epoch_loss)
-        training_history['train_accuracy'].append(train_metrics[1])
+        
+        # Update validation history
         training_history['val_loss'].append(val_metrics[1])
         training_history['val_accuracy'].append(val_metrics[2])
+        training_history['val_kappa'].append(val_kappa)
+
+        # Print epoch results
+        print(f'\nEpoch {epoch} Results:')
+        print(f'Train Loss: {epoch_loss:.4f}, Train Accuracy: {train_metrics[1]:.4f}, Train Kappa: {train_metrics[0]:.4f}')
+        print(f'Val Loss: {val_metrics[1]:.4f}, Val Accuracy: {val_metrics[2]:.4f}, Val Kappa: {val_kappa:.4f}')
+
+        # Step the scheduler with validation kappa score
+        lr_scheduler.step(val_kappa)
 
         if val_kappa > best_val_kappa:
             best_val_kappa = val_kappa
             best_model_state = copy.deepcopy(model.state_dict())
-            torch.save(best_model_state, checkpoint_path)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_kappa': best_val_kappa,
+                'training_history': training_history
+            }, checkpoint_path)
             print(f'Saved new best model with validation kappa: {val_kappa:.4f}')
 
     # Load best model
@@ -571,10 +576,10 @@ class EnsembleModel(nn.Module):
         self.num_classes = num_classes
         self.device = device
         
-        # Initialize model weights with requires_grad=True
+        # Initialize learnable weights for weighted voting
         self.model_weights = nn.Parameter(torch.ones(len(models)) / len(models))
         
-        # Initialize meta classifier
+        # Initialize meta classifier for stacking
         self.meta_classifier = nn.Sequential(
             nn.Linear(len(models) * num_classes, 256),
             nn.BatchNorm1d(256),
@@ -582,16 +587,6 @@ class EnsembleModel(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(256, num_classes)
         ).to(device)
-        
-        # Explicitly set requires_grad for all parameters
-        self.train()  # Ensure the model is in training mode
-        for model in self.models:
-            model.train()
-            for param in model.parameters():
-                param.requires_grad = True
-        
-        for param in self.meta_classifier.parameters():
-            param.requires_grad = True
 
     def forward(self, x):
         if isinstance(x, (list, tuple)):
@@ -600,32 +595,33 @@ class EnsembleModel(nn.Module):
             x = x.to(self.device)
 
         all_outputs = []
+        all_probs = []
         
-        for model in self.models:
-            model.train()  # Ensure model is in training mode
-            outputs = model(x)
-            all_outputs.append(outputs)
-        
-        stacked_outputs = torch.stack(all_outputs)
-        
-        if self.ensemble_methods.get('weighted_average', False):
-            # Use log_softmax for numerical stability
-            log_probs = F.log_softmax(stacked_outputs, dim=-1)
-            weighted_log_probs = log_probs + F.log_softmax(self.model_weights.view(-1, 1, 1), dim=0)
-            return torch.logsumexp(weighted_log_probs, dim=0)
-        
-        elif self.ensemble_methods.get('max_voting', False):
-            predictions = torch.argmax(stacked_outputs, dim=-1)
-            # Use a differentiable approximation instead of mode
-            probs = F.softmax(stacked_outputs, dim=-1)
-            return torch.mean(probs, dim=0)
-        
-        elif self.ensemble_methods.get('stacking', False):
-            meta_features = stacked_outputs.permute(1, 0, 2).reshape(x[0].size(0) if isinstance(x, list) else x.size(0), -1)
-            return self.meta_classifier(meta_features)
-        
-        # Default to averaging logits
-        return torch.mean(stacked_outputs, dim=0)
+        with torch.set_grad_enabled(self.training):
+            for model in self.models:
+                model.train(self.training)
+                outputs = model(x)
+                probs = F.softmax(outputs, dim=-1)
+                all_outputs.append(outputs)
+                all_probs.append(probs)
+            
+            stacked_outputs = torch.stack(all_outputs)
+            stacked_probs = torch.stack(all_probs)
+
+            if self.ensemble_methods.get('max_voting', False):
+                # Weighted voting using softmax probabilities
+                weighted_probs = stacked_probs * F.softmax(self.model_weights.view(-1, 1, 1), dim=0)
+                final_probs = weighted_probs.sum(dim=0)
+                return torch.log(final_probs + 1e-8)  # Add small epsilon to prevent log(0)
+            
+            elif self.ensemble_methods.get('stacking', False):
+                meta_features = stacked_outputs.permute(1, 0, 2).reshape(
+                    x[0].size(0) if isinstance(x, list) else x.size(0), -1
+                )
+                return self.meta_classifier(meta_features)
+            
+            else:  # Default to average
+                return torch.mean(stacked_outputs, dim=0)
         
 def create_data_loaders(train_dataset, val_dataset, test_dataset, batch_size):
     # Create DataLoaders with proper worker initialization
@@ -656,8 +652,16 @@ def create_data_loaders(train_dataset, val_dataset, test_dataset, batch_size):
     return train_loader, val_loader, test_loader
 
 def main():
-    # Set device
+    # Set device and seed for reproducibility
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(42)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    np.random.seed(42)
+    random.seed(42)
+    
     print(f"Using device: {device}")
     
     # Create datasets with selected preprocessing
@@ -685,26 +689,29 @@ def main():
         test=True
     )
     
-    # Create dataloaders using the new function
+    # Create dataloaders
     train_loader, val_loader, test_loader = create_data_loaders(
         train_dataset, val_dataset, test_dataset, batch_size
     )
     
-    # Initialize individual models
+    # Initialize models with different random seeds
     models = []
     model_names = []
     
     if CONFIG['models']['vgg16']:
+        torch.manual_seed(42)  # Different seed for each model
         vgg_model = MyModel(backbone='vgg16').to(device)
         models.append(vgg_model)
         model_names.append('vgg16')
         
     if CONFIG['models']['resnet18']:
+        torch.manual_seed(43)
         resnet18_model = MyModel(backbone='resnet18').to(device)
         models.append(resnet18_model)
         model_names.append('resnet18')
         
     if CONFIG['models']['resnet34']:
+        torch.manual_seed(44)
         resnet34_model = MyModel(backbone='resnet34').to(device)
         models.append(resnet34_model)
         model_names.append('resnet34')
@@ -712,10 +719,28 @@ def main():
     # Create ensemble model
     ensemble = EnsembleModel(models, CONFIG['ensemble_methods'], device).to(device)
     
-    # Training setup
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(ensemble.parameters(), lr=learning_rate)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    # Training setup with weighted loss
+    class_weights = torch.tensor([1.0, 2.0, 2.0, 2.0, 2.0]).to(device)  # Adjust weights based on class distribution
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    
+    # Optimizer with different parameter groups
+    optimizer_grouped_parameters = [
+        {'params': model.parameters(), 'lr': learning_rate} for model in models
+    ]
+    optimizer_grouped_parameters.append({
+        'params': ensemble.meta_classifier.parameters(), 
+        'lr': learning_rate * 0.1  # Lower learning rate for meta classifier
+    })
+    
+    optimizer = torch.optim.Adam(optimizer_grouped_parameters, weight_decay=1e-4)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='max',
+        factor=0.1,
+        patience=5,
+        verbose=True,
+        min_lr=1e-7
+    )
     
     # Generate unique run identifier
     model_str = '_'.join(model_names)
@@ -723,7 +748,7 @@ def main():
     preprocess_str = '_'.join([k for k, v in preprocessing_config.items() if v])
     run_id = f"{model_str}_{ensemble_str}_{preprocess_str}"
     
-    # Create directories if they don't exist
+    # Create directories
     os.makedirs('checkpoints', exist_ok=True)
     os.makedirs('predictions', exist_ok=True)
     visualization_dir = f'visualizations/{run_id}'
@@ -741,17 +766,13 @@ def main():
     
     # Generate predictions
     prediction_path = f'predictions/pred_{run_id}.csv'
-    
-    test_predictions = evaluate_model(
+    test_metrics = evaluate_model(
         ensemble, test_loader, device,
         test_only=True,
         prediction_path=prediction_path
     )
     
-    print(f"Saved predictions to {prediction_path}")
-    print(f"Saved model to {checkpoint_path}")
-    
-    # Generate and save visualizations
+    # Save visualization results
     visualize_and_explain(
         model=ensemble,
         dataloader=val_loader,
@@ -761,7 +782,10 @@ def main():
         save_dir=visualization_dir
     )
     
-    print(f"Visualizations saved to {visualization_dir}")
+    print(f"\nTraining completed!")
+    print(f"Checkpoint saved to: {checkpoint_path}")
+    print(f"Predictions saved to: {prediction_path}")
+    print(f"Visualizations saved to: {visualization_dir}")
 
 if __name__ == '__main__':
     main()
