@@ -1,5 +1,3 @@
-# this file contains resnet 18 running pretrained weights + self attention + all layers unfrozen + Boosting
-
 import copy
 import os
 import random
@@ -13,9 +11,11 @@ from PIL import Image
 from sklearn.metrics import cohen_kappa_score, precision_score, recall_score, accuracy_score
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
-from torchvision.transforms.functional import to_pil_image, adjust_gamma
+from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
 import torch.nn.functional as F
+from torchvision.transforms.functional import adjust_gamma 
+
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
@@ -161,16 +161,15 @@ class FundRandomRotate:
         return img
 
 
-
 transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
     # FundRandomRotate(prob=0.5, degree=30),
-    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
+    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -330,6 +329,20 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)  # Average pooling along channel axis
+        max_out, _ = torch.max(x, dim=1, keepdim=True)  # Max pooling along channel axis
+        x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
+        x = self.conv(x)  # Learn spatial importance
+        return self.sigmoid(x)  # Scale spatial importance
+    
+    
 class SelfAttention(nn.Module):
     def __init__(self, in_channels):
         super(SelfAttention, self).__init__()
@@ -363,20 +376,20 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
-        self.backbone = models.resnet18(pretrained=True)
-        # Get the input features for the classifier dynamically
-        in_features = self.backbone.fc.in_features
-
+        # Load the pretrained VGG16 model
+        self.backbone = models.vgg16(pretrained=True)
+        
+        # Unfreeze all layers
         for param in self.backbone.parameters():
             param.requires_grad = True
-
-        # Self-attention layer (applied to intermediate feature maps)
+            
         self.self_attention = SelfAttention(in_channels=512)
-        self.self_attention3 = SelfAttention(in_channels=256)
-        self.self_attention4 = SelfAttention(in_channels=512)
 
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.classifier[0].in_features
+        
         # Replace the classifier with a custom one
-        self.backbone.fc = nn.Sequential(
+        self.backbone.classifier = nn.Sequential(
             nn.Linear(in_features, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
@@ -387,79 +400,73 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        # Extract intermediate feature maps from the backbone
-        x = self.backbone.conv1(x)
-        x = self.backbone.bn1(x)
-        x = self.backbone.relu(x)
-        x = self.backbone.maxpool(x)
+        # Forward pass through the VGG16 backbone
+        features = self.backbone.features(x)
 
-        x = self.backbone.layer1(x)
-        x = self.backbone.layer2(x)
-        x = self.backbone.layer3(x)
-        x = self.self_attention3(x)
-        x = self.backbone.layer4(x)
-        x = self.self_attention4(x)
+        # Apply self-attention
+        features = self.self_attention(features)
 
-        # Apply self-attention to the feature maps
-        # x = self.self_attention(x)
-
-        # Apply global average pooling
-        x = self.backbone.avgpool(x)
-        x = torch.flatten(x, 1)  # Flatten to (B, 512)
-
-        # Pass through the classifier
-        x = self.backbone.fc(x)
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
 
+# STACKING
 
-
-
-# class BaggingEnsemble(nn.Module):
-#     def __init__(self, base_model, num_models, num_classes):
-#         super(BaggingEnsemble, self).__init__()
-#         self.models = nn.ModuleList([base_model for _ in range(num_models)])
-#         self.num_models = num_models
-#         self.num_classes = num_classes
-
-#     def forward(self, x):
-#         # Collect predictions from all models
-#         outputs = torch.stack([model(x) for model in self.models], dim=0)  # Shape: (num_models, batch_size, num_classes)
-#         # Average predictions across all models
-#         ensemble_output = torch.mean(outputs, dim=0)  # Shape: (batch_size, num_classes)
-#         return ensemble_output
-
-class BoostingEnsemble(nn.Module):
-    def __init__(self, base_model, num_models, num_classes):
-        super(BoostingEnsemble, self).__init__()
-        self.models = nn.ModuleList([base_model for _ in range(num_models)])
-        self.num_models = num_models
-        self.num_classes = num_classes
-        self.alphas = nn.ParameterList([nn.Parameter(torch.tensor(0.0)) for _ in range(num_models)])
+class StackingEnsemble(nn.Module):
+    def __init__(self, base_models, meta_model):
+        super(StackingEnsemble, self).__init__()
+        self.base_models = nn.ModuleList(base_models)  # List of base models
+        self.meta_model = meta_model  # Meta-learner model
 
     def forward(self, x):
-        ensemble_output = torch.zeros(x.size(0), self.num_classes).to(x.device)  # Initialize ensemble output
-        for model, alpha in zip(self.models, self.alphas):
-            output = model(x)
-            ensemble_output += torch.exp(alpha) * output  # Weighted sum of predictions
-        return ensemble_output
+        # Collect predictions from base models
+        base_preds = [model(x) for model in self.base_models]
+        # Concatenate predictions along the feature dimension
+        stacked_preds = torch.cat(base_preds, dim=1)
+        # Pass concatenated predictions to the meta-learner
+        return self.meta_model(stacked_preds)
+
+
+class MetaLearner(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(MetaLearner, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        return self.fc(x)
 
 
 if __name__ == '__main__':
-    # Choose between 'single image' and 'dual images' pipeline
-    # This will affect the model definition, dataset pipeline, training and evaluation
-
-    mode = 'single'  # forward single image to the model each time
-    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
+    mode = 'single'  # Forward single image to the model each time
 
     assert mode in ('single', 'dual')
 
-    # Define the base model
-    base_model = MyModel(num_classes=5)
-    num_models = 5  # Number of models in the ensemble
-    num_classes = 5  # Number of output classes
+    # Define base models
+    base_model_1 = MyModel(num_classes=5)
+    base_model_2 = MyModel(num_classes=5)
+    base_model_3 = MyModel(num_classes=5)
 
-    # Create the boosting ensemble
-    model = BoostingEnsemble(base_model, num_models=num_models, num_classes=num_classes)
+    # Load pretrained weights into base models (if available)
+    base_models = [base_model_1, base_model_2, base_model_3]
+    for i, model in enumerate(base_models):
+        state_dict = torch.load(f'./pre/pretrained/vgg16.pth', map_location='cpu')
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = f"backbone.{key}"  # Prefix with 'backbone.'
+            new_state_dict[new_key] = value
+        model.load_state_dict(new_state_dict, strict=False)
+
+    # Define the meta-learner
+    meta_model = MetaLearner(input_size=len(base_models) * 5, num_classes=5)
+
+    # Define the stacking ensemble
+    model = StackingEnsemble(base_models=base_models, meta_model=meta_model)
 
     print(model, '\n')
     print('Pipeline Mode:', mode)
@@ -480,11 +487,8 @@ if __name__ == '__main__':
     # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
-    
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    model.load_state_dict(state_dict, strict=False)
 
-    # Move model and criterion to the device
+    # Move models to the device
     model = model.to(device)
 
     # Optimizer and Learning rate scheduler
@@ -495,12 +499,8 @@ if __name__ == '__main__':
     model = train_model(
         model, train_loader, val_loader, device, criterion, optimizer,
         lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./ensemble_model.pth'
+        checkpoint_path='./stacking_model.pth'
     )
 
-    # Load the pretrained checkpoint
-    state_dict = torch.load('./ensemble_model.pth', map_location='cpu')
-    model.load_state_dict(state_dict, strict=True)
-
-    # Make predictions on testing set and save the prediction results
+    # Make predictions on the testing set and save the prediction results
     evaluate_model(model, test_loader, device, test_only=True)

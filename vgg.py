@@ -326,16 +326,32 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SpatialAttention(nn.Module):
+    def _init_(self):
+        super(SpatialAttention, self)._init_()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)  # Average pooling along channel axis
+        max_out, _ = torch.max(x, dim=1, keepdim=True)  # Max pooling along channel axis
+        x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
+        x = self.conv(x)  # Learn spatial importance
+        return self.sigmoid(x)  # Scale spatial importance
+
+
 class MyModel(nn.Module):
-    def __init__(self, num_classes=5, dropout_rate=0.51):
-        super().__init__()
+    def _init_(self, num_classes=5, dropout_rate=0.52):
+        super()._init_()
 
         # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
         
         # Unfreeze all layers
-        for param in self.backbone.parameters():
-            param.requires_grad = True
+        # for param in self.backbone.parameters():
+        #     param.requires_grad = True
+            
+        self.spatial_attention = SpatialAttention()
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -353,7 +369,11 @@ class MyModel(nn.Module):
 
     def forward(self, x):
         # Forward pass through the VGG16 backbone
-        x = self.backbone(x)
+        features = self.backbone.features(x)
+        attention = self.spatial_attention(features)
+        features = features * attention
+        features = features.view(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
         return x
 
 

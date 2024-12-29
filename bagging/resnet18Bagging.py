@@ -372,6 +372,8 @@ class MyModel(nn.Module):
 
         # Self-attention layer (applied to intermediate feature maps)
         self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
 
         # Replace the classifier with a custom one
         self.backbone.fc = nn.Sequential(
@@ -394,10 +396,12 @@ class MyModel(nn.Module):
         x = self.backbone.layer1(x)
         x = self.backbone.layer2(x)
         x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
         x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
 
         # Apply self-attention to the feature maps
-        x = self.self_attention(x)
+        # x = self.self_attention(x)
 
         # Apply global average pooling
         x = self.backbone.avgpool(x)
