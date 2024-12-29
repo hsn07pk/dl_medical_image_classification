@@ -151,6 +151,8 @@ Increased the batch size to 34: because it was giving better results
 
 
 ## VGG16
+Training Best Kappa: 85,98
+Test Results: 85,21
 
 ## Resnet 18
 
@@ -180,18 +182,18 @@ Increased the batch size to 34: because it was giving better results
 ## VGG16
 1. CONFIG={'models':{'vgg16':True,'resnet18':False,'resnet34':False},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
 2. Training Best Kappa: 
-3. Kaggle Score: 
+3. Kaggle Score: 76,28
 
 ## Resnet 18
 1. CONFIG={'models':{'vgg16':False,'resnet18':True,'resnet34':False},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
 2. Training Best Kappa: 
-3. Kaggle Score:
+3. Kaggle Score: 71,26
 
 ## Resnet 34
 
 1. CONFIG={'models':{'vgg16':False,'resnet18':False,'resnet34':True},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
 2. Training Best Kappa: 
-3. Kaggle Score:
+3. Kaggle Score: 78,84
 
 
 
