@@ -20,7 +20,7 @@ import torch.nn.functional as F
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 20
+num_epochs = 25
 
 
 class RetinopathyDataset(Dataset):
@@ -182,27 +182,29 @@ transform_test = transforms.Compose([
 ])
 
 
-def train_model(model, train_loader, val_loader, device, criterion, optimizer, lr_scheduler, num_epochs=25,
-                checkpoint_path='model.pth'):
+def train_model_with_boosting(model, train_loader, val_loader, device, criterion, optimizer, lr_scheduler, num_epochs=25, checkpoint_path='model.pth'):
     best_model = model.state_dict()
     best_epoch = None
-    best_val_kappa = -1.0  # Initialize the best kappa score
+    best_val_kappa = -1.0
+
+    # Initialize training history
+    training_history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_accuracy': [],
+        'val_accuracy': []
+    }
 
     for epoch in range(1, num_epochs + 1):
         print(f'\nEpoch {epoch}/{num_epochs}')
         running_loss = []
-        all_preds = []
-        all_labels = []
+        epoch_preds = []
+        epoch_labels = []
 
         model.train()
-
         with tqdm(total=len(train_loader), desc=f'Training', unit=' batch', file=sys.stdout) as pbar:
             for images, labels in train_loader:
-                if not isinstance(images, list):
-                    images = images.to(device)  # single image case
-                else:
-                    images = [x.to(device) for x in images]  # dual images case
-
+                images = images.to(device)
                 labels = labels.to(device)
 
                 optimizer.zero_grad()
@@ -214,44 +216,67 @@ def train_model(model, train_loader, val_loader, device, criterion, optimizer, l
                 optimizer.step()
 
                 preds = torch.argmax(outputs, 1)
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                epoch_preds.extend(preds.cpu().numpy())
+                epoch_labels.extend(labels.cpu().numpy())
 
                 running_loss.append(loss.item())
-
                 pbar.set_postfix({'lr': f'{optimizer.param_groups[0]["lr"]:.1e}', 'Loss': f'{loss.item():.4f}'})
                 pbar.update(1)
 
         lr_scheduler.step()
 
+        # Calculate epoch metrics
         epoch_loss = sum(running_loss) / len(running_loss)
+        train_metrics = compute_metrics(epoch_preds, epoch_labels)
+        train_kappa, train_accuracy, train_precision, train_recall = train_metrics
 
-        train_metrics = compute_metrics(all_preds, all_labels, per_class=True)
-        kappa, accuracy, precision, recall = train_metrics[:4]
+        # Store training metrics
+        training_history['train_loss'].append(epoch_loss)
+        training_history['train_accuracy'].append(train_accuracy)
 
-        print(f'[Train] Kappa: {kappa:.4f} Accuracy: {accuracy:.4f} '
-              f'Precision: {precision:.4f} Recall: {recall:.4f} Loss: {epoch_loss:.4f}')
+        # Validation phase
+        model.eval()
+        val_running_loss = []
+        val_preds = []
+        val_labels = []
 
-        if len(train_metrics) > 4:
-            precision_per_class, recall_per_class = train_metrics[4:]
-            for i, (precision, recall) in enumerate(zip(precision_per_class, recall_per_class)):
-                print(f'[Train] Class {i}: Precision: {precision:.4f}, Recall: {recall:.4f}')
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images = images.to(device)
+                labels = labels.to(device)
 
-        # Evaluation on the validation set at the end of each epoch
-        val_metrics = evaluate_model(model, val_loader, device)
-        val_kappa, val_accuracy, val_precision, val_recall = val_metrics[:4]
+                outputs = model(images)
+                val_loss = criterion(outputs, labels.long())
+
+                preds = torch.argmax(outputs, 1)
+                val_preds.extend(preds.cpu().numpy())
+                val_labels.extend(labels.cpu().numpy())
+
+                val_running_loss.append(val_loss.item())
+
+        val_epoch_loss = sum(val_running_loss) / len(val_running_loss)
+        val_metrics = compute_metrics(val_preds, val_labels)
+        val_kappa, val_accuracy, val_precision, val_recall = val_metrics
+
+        # Store validation metrics
+        training_history['val_loss'].append(val_epoch_loss)
+        training_history['val_accuracy'].append(val_accuracy)
+
+        print(f'[Train] Kappa: {train_kappa:.4f} Accuracy: {train_accuracy:.4f} '
+              f'Precision: {train_precision:.4f} Recall: {train_recall:.4f} Loss: {epoch_loss:.4f}')
         print(f'[Val] Kappa: {val_kappa:.4f} Accuracy: {val_accuracy:.4f} '
-              f'Precision: {val_precision:.4f} Recall: {val_recall:.4f}')
+              f'Precision: {val_precision:.4f} Recall: {val_recall:.4f} Loss: {val_epoch_loss:.4f}')
 
         if val_kappa > best_val_kappa:
             best_val_kappa = val_kappa
             best_epoch = epoch
-            best_model = model.state_dict()
-            torch.save(best_model, checkpoint_path)
+            best_model = copy.deepcopy(model.state_dict())
 
-    print(f'[Val] Best kappa: {best_val_kappa:.4f}, Epoch {best_epoch}')
+    # Save the best model state
+    torch.save(best_model, checkpoint_path)
+    print(f'Best model saved at epoch {best_epoch} with validation kappa: {best_val_kappa:.4f}')
 
-    return model
+    return model, training_history
 
 
 def evaluate_model(model, test_loader, device, test_only=False, prediction_path='./test_predictions.csv'):
@@ -446,20 +471,12 @@ class BoostingEnsemble(nn.Module):
 
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
-    # This will affect the model definition, dataset pipeline, training and evaluation
-
-    mode = 'single'  # forward single image to the model each time
-    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
-
+    mode = 'single'  # forward single image to the model each time 
     assert mode in ('single', 'dual')
 
-    # Define the base model
-    base_model = MyModel(num_classes=5)
-    num_models = 5  # Number of models in the ensemble
-    num_classes = 5  # Number of output classes
-
-    # Create the boosting ensemble
-    model = BoostingEnsemble(base_model, num_models=num_models, num_classes=num_classes)
+    # Define the model
+    if mode == 'single':
+        model = MyModel()
 
     print(model, '\n')
     print('Pipeline Mode:', mode)
@@ -474,33 +491,50 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    # Define the weighted CrossEntropyLoss
+    # Define the CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
     # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
     
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    model.load_state_dict(state_dict, strict=False)
-
-    # Move model and criterion to the device
+    # Load pretrained weights
+    state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = f"backbone.{key}"
+        new_state_dict[new_key] = value
+    
+    model.load_state_dict(new_state_dict, strict=False)
     model = model.to(device)
 
     # Optimizer and Learning rate scheduler
     optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-    # Train and evaluate the model with the training and validation set
-    model = train_model(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./ensemble_model.pth'
+    # Train the model and get training history
+    model, training_history = train_model_with_boosting(
+        model, train_loader, val_loader, device, criterion, optimizer, 
+        lr_scheduler, num_epochs=num_epochs, checkpoint_path='best_model.pth'
     )
-
-    # Load the pretrained checkpoint
-    state_dict = torch.load('./ensemble_model.pth', map_location='cpu')
-    model.load_state_dict(state_dict, strict=True)
-
-    # Make predictions on testing set and save the prediction results
+    
+    # Import visualization utilities
+    from visualization import visualize_and_explain
+    
+    # Create visualization directory
+    os.makedirs('./visualizations', exist_ok=True)
+    
+    # Generate visualizations
+    print("\nGenerating visualizations...")
+    visualize_and_explain(
+        model=model,
+        dataloader=val_loader,
+        device=device,
+        num_epochs=num_epochs,
+        training_history=training_history,
+        save_dir='./visualizations/'
+    )
+    
+    # Make predictions on testing set
+    print("\nGenerating test predictions...")
     evaluate_model(model, test_loader, device, test_only=True)

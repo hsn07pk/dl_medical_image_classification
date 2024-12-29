@@ -23,7 +23,7 @@ datasets/
 # Images
 *.jpg
 *.jpeg
-*.png
+
 *.bmp
 *.gif
 *.tif

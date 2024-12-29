@@ -15,7 +15,7 @@ from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
 import torch.nn.functional as F 
 from sklearn.ensemble import GradientBoostingClassifier
-from visualization import visualize_and_explain
+from visualization_vgg import visualize_and_explain
 
 
 # Hyper Parameters
