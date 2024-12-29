@@ -155,9 +155,12 @@ Training Best Kappa: 85,98
 Test Results: 85,21
 
 ## Resnet 18
+Training Best Kappa: 0.8680
+Test Results: 0.8567
 
 ## Resnet 34
-
+Training Best Kappa: 0.8472
+Test Results: 0.8282
 
 # Weighted Average
 

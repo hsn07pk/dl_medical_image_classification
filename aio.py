@@ -17,7 +17,7 @@ from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
 import torch.nn.functional as F
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, StackingClassifier
-from visualization import visualize_and_explain
+from visualization_vgg import visualize_and_explain
 from torchvision.transforms.functional import adjust_gamma 
 
 # Configuration dictionary for easy selection

@@ -21,7 +21,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 batch_size = 32
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 20
+num_epochs = 25
 
 
 class RetinopathyDataset(Dataset):
@@ -574,7 +574,15 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
     model.train()
     all_train_features, all_train_labels = [], []
     
-    # Initialize the booster at the start
+    # Initialize training history dictionary
+    training_history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_accuracy': [],
+        'val_accuracy': []
+    }
+    
+    # Initialize the booster
     booster = GradientBoostingClassifier(
         n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
     )
@@ -584,6 +592,7 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
         running_loss = []
         epoch_features = []
         epoch_labels = []
+        epoch_preds = []  # Track predictions for accuracy
 
         with tqdm(total=len(train_loader), desc='Training', unit='batch', file=sys.stdout) as pbar:
             for images, labels in train_loader:
@@ -597,55 +606,75 @@ def train_and_extract_features(model, train_loader, val_loader, device, criterio
                 running_loss.append(loss.item())
                 pbar.update(1)
 
-                # Collect features from the model for boosting
+                # Collect features and predictions
                 with torch.no_grad():
                     features = outputs.cpu().numpy()
+                    preds = torch.argmax(outputs, dim=1).cpu().numpy()
                     epoch_features.append(features)
                     epoch_labels.append(labels.cpu().numpy())
+                    epoch_preds.extend(preds)
 
-        # Concatenate epoch features and labels
+        # Calculate training metrics
         epoch_features = np.concatenate(epoch_features)
         epoch_labels = np.concatenate(epoch_labels).flatten()
+        epoch_loss = sum(running_loss) / len(running_loss)
+        train_accuracy = accuracy_score(epoch_labels, epoch_preds)
+        
+        # Store training metrics
+        training_history['train_loss'].append(epoch_loss)
+        training_history['train_accuracy'].append(train_accuracy)
         
         # Add to overall features and labels
         all_train_features.append(epoch_features)
         all_train_labels.append(epoch_labels)
 
-        epoch_loss = sum(running_loss) / len(running_loss)
-        print(f'[Epoch {epoch}] Training Loss: {epoch_loss:.4f}')
+        print(f'[Epoch {epoch}] Training Loss: {epoch_loss:.4f}, Training Accuracy: {train_accuracy:.4f}')
 
-        # Validation at the end of each epoch
+        # Validation phase
         model.eval()
         all_val_features, all_val_labels = [], []
+        val_running_loss = []
+        val_preds = []
+        
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
+                val_loss = criterion(outputs, labels.long())
+                val_running_loss.append(val_loss.item())
+                
+                predictions = torch.argmax(outputs, dim=1).cpu().numpy()
+                val_preds.extend(predictions)
                 all_val_features.append(outputs.cpu().numpy())
                 all_val_labels.append(labels.cpu().numpy())
 
         val_features = np.concatenate(all_val_features)
         val_labels = np.concatenate(all_val_labels)
+        val_epoch_loss = sum(val_running_loss) / len(val_running_loss)
+        val_accuracy = accuracy_score(val_labels.flatten(), val_preds)
+        
+        # Store validation metrics
+        training_history['val_loss'].append(val_epoch_loss)
+        training_history['val_accuracy'].append(val_accuracy)
 
-        # Train booster on accumulated features after each epoch
+        # Train booster on accumulated features
         train_features_combined = np.concatenate(all_train_features)
         train_labels_combined = np.concatenate(all_train_labels)
-        
         booster.fit(train_features_combined, train_labels_combined)
         
         # Evaluate boosting
-        val_preds = booster.predict(val_features)
-        val_accuracy = accuracy_score(val_labels.flatten(), val_preds)
-        print(f'[Epoch {epoch}] Boosting Validation Accuracy: {val_accuracy:.4f}')
+        boost_preds = booster.predict(val_features)
+        boost_accuracy = accuracy_score(val_labels.flatten(), boost_preds)
+        print(f'[Epoch {epoch}] Val Loss: {val_epoch_loss:.4f}, Val Accuracy: {val_accuracy:.4f}')
+        print(f'[Epoch {epoch}] Boosting Validation Accuracy: {boost_accuracy:.4f}')
 
-    # Return final features and labels
+    # Return final features, labels, and training history
     final_train_features = np.concatenate(all_train_features)
     final_train_labels = np.concatenate(all_train_labels)
     final_val_features = val_features
     final_val_labels = val_labels
 
-    return final_train_features, final_train_labels, final_val_features, final_val_labels
-
+    return final_train_features, final_train_labels, final_val_features, final_val_labels, training_history
 
 
 if __name__ == '__main__':
@@ -702,13 +731,11 @@ if __name__ == '__main__':
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Train and evaluate the model with the training and validation set
-    train_features, train_labels, val_features, val_labels = train_and_extract_features(
+    train_features, train_labels, val_features, val_labels, training_history = train_and_extract_features(
         model, train_loader, val_loader, device, criterion, optimizer, num_epochs=num_epochs
     )
     
-
-    # Load the pretrained checkpoint
-    # Apply a boosting ensemble method
+    # Apply boosting ensemble method
     train_labels = train_labels.flatten()
     val_labels = val_labels.flatten()
 
@@ -720,6 +747,21 @@ if __name__ == '__main__':
     accuracy = accuracy_score(val_labels, val_preds)
     print(f'Boosting Validation Accuracy: {accuracy:.4f}')
 
+    # Generate visualizations
+    print("\nGenerating visualizations...")
+    from visualization import visualize_and_explain
+    
+    # Create visualization directory
+    os.makedirs('./visualizations', exist_ok=True)
+    
+    visualize_and_explain(
+        model=model,
+        dataloader=val_loader,
+        device=device,
+        num_epochs=num_epochs,
+        training_history=training_history,
+        save_dir='./visualizations/'
+    )
 
-    # Make predictions on testing set and save the prediction results
+    # Make predictions on testing set
     evaluate_model(model, test_loader, device, test_only=True)
