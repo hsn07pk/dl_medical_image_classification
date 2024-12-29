@@ -156,17 +156,37 @@ integrates boosting by extracting features from a deep learning model and then a
 
 ## VGG16
 
+1. CONFIG={'models':{'vgg16':True,'resnet18':False,'resnet34':False},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':True,'max_voting':False,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
+2. Training Best Kappa: 86.19
+3. Kaggle Score: 79.55
+
 ## Resnet 18
+1. CONFIG={'models':{'vgg16':False,'resnet18':True,'resnet34':False},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':True,'max_voting':False,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
+2. Training Best Kappa: 96,38
+3. Kaggle Score: 78,12
 
 ## Resnet 34
+1. CONFIG={'models':{'vgg16':False,'resnet18':False,'resnet34':True},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':True,'max_voting':False,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
+2. Training Best Kappa:87,82
+3. Kaggle Score: 78,12
 
 # Max Voting
 
 ## VGG16
+1. CONFIG={'models':{'vgg16':True,'resnet18':False,'resnet34':False},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
+2. Training Best Kappa: 
+3. Kaggle Score: 
 
 ## Resnet 18
+1. CONFIG={'models':{'vgg16':False,'resnet18':True,'resnet34':False},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
+2. Training Best Kappa: 
+3. Kaggle Score:
 
 ## Resnet 34
+
+1. CONFIG={'models':{'vgg16':False,'resnet18':False,'resnet34':True},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
+2. Training Best Kappa: 
+3. Kaggle Score:
 
 
 
