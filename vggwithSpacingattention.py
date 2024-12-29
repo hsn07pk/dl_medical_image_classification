@@ -18,7 +18,7 @@ from tqdm import tqdm
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -327,8 +327,8 @@ def compute_metrics(preds, labels, per_class=False):
 
 
 class SpatialAttention(nn.Module):
-    def _init_(self):
-        super(SpatialAttention, self)._init_()
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
         self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid = nn.Sigmoid()
 
@@ -341,13 +341,13 @@ class SpatialAttention(nn.Module):
 
 
 class MyModel(nn.Module):
-    def _init_(self, num_classes=5, dropout_rate=0.52):
-        super()._init_()
+    def __init__(self, num_classes=5, dropout_rate=0.5):
+        super(MyModel, self).__init__()
 
         # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
         
-        # Unfreeze all layers
+        # # Unfreeze all layers
         # for param in self.backbone.parameters():
         #     param.requires_grad = True
             
@@ -378,12 +378,15 @@ class MyModel(nn.Module):
 
 
 
+
+
 if __name__ == '__main__':
     # Choose between 'single image' and 'dual images' pipeline
     # This will affect the model definition, dataset pipeline, training and evaluation
 
- 
+    #TODO: change mode here
     mode = 'single'  # forward single image to the model each time 
+    # mode = 'dual'  # forward two images of the same eye to the model and fuse the features
 
     assert mode in ('single', 'dual')
 
@@ -412,17 +415,6 @@ if __name__ == '__main__':
     # Use GPU device is possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
-    
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = f"backbone.{key}"  # Prefix with 'backbone.'
-        new_state_dict[new_key] = value
-    
-    model.load_state_dict(new_state_dict, strict=False)
-    
-    
 
     # Move class weights to the device
     model = model.to(device)
@@ -435,11 +427,12 @@ if __name__ == '__main__':
     model = train_model(
         model, train_loader, val_loader, device, criterion, optimizer,
         lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+        checkpoint_path='./model_1.pth'
     )
 
     # Load the pretrained checkpoint
-
+    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
+    model.load_state_dict(state_dict, strict=True)
 
     # Make predictions on testing set and save the prediction results
     evaluate_model(model, test_loader, device, test_only=True)

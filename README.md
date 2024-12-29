@@ -135,11 +135,16 @@ Result: 79.59%
 
 Now trying another way of boosting:
 integrates boosting by extracting features from a deep learning model and then applying a traditional gradient boosting algorithm (GradientBoostingClassifier from scikit-learn). 
-
+We got: 82.13% Better than the previous one. 
 
 
 
 ## Resnet 34
+
+Since the hybrid approach is working better, we will only apply that to resnet 34
+Increased the batch size to 34: because it was giving better results
+
+
 
 
 # Stacking

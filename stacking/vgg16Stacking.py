@@ -13,12 +13,14 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+import torch.nn.functional as F
+from torchvision.transforms.functional import adjust_gamma 
 
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 20
 
 
 class RetinopathyDataset(Dataset):
@@ -163,10 +165,11 @@ transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
-    FundRandomRotate(prob=0.5, degree=30),
+    # FundRandomRotate(prob=0.5, degree=30),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
+    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -327,8 +330,8 @@ def compute_metrics(preds, labels, per_class=False):
 
 
 class SpatialAttention(nn.Module):
-    def _init_(self):
-        super(SpatialAttention, self)._init_()
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
         self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
         self.sigmoid = nn.Sigmoid()
 
@@ -338,20 +341,49 @@ class SpatialAttention(nn.Module):
         x = torch.cat([avg_out, max_out], dim=1)  # Concatenate along channel axis
         x = self.conv(x)  # Learn spatial importance
         return self.sigmoid(x)  # Scale spatial importance
+    
+    
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling parameter
+
+    def forward(self, x):
+        batch_size, C, H, W = x.size()  # Input feature map dimensions: (B, C, H, W)
+
+        # Query, Key, and Value transformations
+        query = self.query_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C//8)
+        key = self.key_conv(x).view(batch_size, -1, H * W)  # Shape: (B, C//8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C)
+
+        # Compute attention weights
+        attention = torch.bmm(query, key)  # Shape: (B, H*W, H*W)
+        attention = F.softmax(attention, dim=-1)  # Normalize attention weights across spatial dimensions
+
+        # Weighted sum of values
+        out = torch.bmm(attention, value).permute(0, 2, 1)  # Shape: (B, C, H*W)
+        out = out.view(batch_size, C, H, W)  # Reshape back to spatial dimensions
+
+        # Apply learnable scaling and residual connection
+        out = self.gamma * out + x
+        return out
 
 
 class MyModel(nn.Module):
-    def _init_(self, num_classes=5, dropout_rate=0.52):
-        super()._init_()
+    def __init__(self, num_classes=5, dropout_rate=0.52):
+        super().__init__()
 
         # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
         
         # Unfreeze all layers
-        # for param in self.backbone.parameters():
-        #     param.requires_grad = True
+        for param in self.backbone.parameters():
+            param.requires_grad = True
             
-        self.spatial_attention = SpatialAttention()
+        self.self_attention = SelfAttention(in_channels=512)
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -370,28 +402,71 @@ class MyModel(nn.Module):
     def forward(self, x):
         # Forward pass through the VGG16 backbone
         features = self.backbone.features(x)
-        attention = self.spatial_attention(features)
-        features = features * attention
-        features = features.view(features.size(0), -1)  # Flatten
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
         x = self.backbone.classifier(features)
         return x
 
+# STACKING
+
+class StackingEnsemble(nn.Module):
+    def __init__(self, base_models, meta_model):
+        super(StackingEnsemble, self).__init__()
+        self.base_models = nn.ModuleList(base_models)  # List of base models
+        self.meta_model = meta_model  # Meta-learner model
+
+    def forward(self, x):
+        # Collect predictions from base models
+        base_preds = [model(x) for model in self.base_models]
+        # Concatenate predictions along the feature dimension
+        stacked_preds = torch.cat(base_preds, dim=1)
+        # Pass concatenated predictions to the meta-learner
+        return self.meta_model(stacked_preds)
+
+
+class MetaLearner(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(MetaLearner, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        return self.fc(x)
 
 
 if __name__ == '__main__':
-    # Choose between 'single image' and 'dual images' pipeline
-    # This will affect the model definition, dataset pipeline, training and evaluation
-
- 
-    mode = 'single'  # forward single image to the model each time 
+    mode = 'single'  # Forward single image to the model each time
 
     assert mode in ('single', 'dual')
 
-    # Define the model
-    if mode == 'single':
-        model = MyModel()
-    # else:
-    #     model = MyDualModel()
+    # Define base models
+    base_model_1 = MyModel(num_classes=5)
+    base_model_2 = MyModel(num_classes=5)
+    base_model_3 = MyModel(num_classes=5)
+
+    # Load pretrained weights into base models (if available)
+    base_models = [base_model_1, base_model_2, base_model_3]
+    for i, model in enumerate(base_models):
+        state_dict = torch.load(f'./pre/pretrained/vgg16.pth', map_location='cpu')
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = f"backbone.{key}"  # Prefix with 'backbone.'
+            new_state_dict[new_key] = value
+        model.load_state_dict(new_state_dict, strict=False)
+
+    # Define the meta-learner
+    meta_model = MetaLearner(input_size=len(base_models) * 5, num_classes=5)
+
+    # Define the stacking ensemble
+    model = StackingEnsemble(base_models=base_models, meta_model=meta_model)
 
     print(model, '\n')
     print('Pipeline Mode:', mode)
@@ -409,22 +484,11 @@ if __name__ == '__main__':
     # Define the weighted CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
-    # Use GPU device is possible
+    # Use GPU device if possible
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
-    
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = f"backbone.{key}"  # Prefix with 'backbone.'
-        new_state_dict[new_key] = value
-    
-    model.load_state_dict(new_state_dict, strict=False)
-    
-    
 
-    # Move class weights to the device
+    # Move models to the device
     model = model.to(device)
 
     # Optimizer and Learning rate scheduler
@@ -435,11 +499,8 @@ if __name__ == '__main__':
     model = train_model(
         model, train_loader, val_loader, device, criterion, optimizer,
         lr_scheduler=lr_scheduler, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+        checkpoint_path='./stacking_model.pth'
     )
 
-    # Load the pretrained checkpoint
-
-
-    # Make predictions on testing set and save the prediction results
+    # Make predictions on the testing set and save the prediction results
     evaluate_model(model, test_loader, device, test_only=True)
