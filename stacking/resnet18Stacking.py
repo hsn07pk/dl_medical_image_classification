@@ -376,20 +376,20 @@ class MyModel(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
-        # Load the pretrained VGG16 model
-        self.backbone = models.vgg16(pretrained=True)
-        
-        # Unfreeze all layers
+        self.backbone = models.resnet18(pretrained=True)
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.fc.in_features
+
         for param in self.backbone.parameters():
             param.requires_grad = True
-            
-        self.self_attention = SelfAttention(in_channels=512)
 
-        # Get the input features for the classifier dynamically
-        in_features = self.backbone.classifier[0].in_features
-        
+        # Self-attention layer (applied to intermediate feature maps)
+        self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
+
         # Replace the classifier with a custom one
-        self.backbone.classifier = nn.Sequential(
+        self.backbone.fc = nn.Sequential(
             nn.Linear(in_features, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
@@ -400,15 +400,28 @@ class MyModel(nn.Module):
         )
 
     def forward(self, x):
-        # Forward pass through the VGG16 backbone
-        features = self.backbone.features(x)
+        # Extract intermediate feature maps from the backbone
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
 
-        # Apply self-attention
-        features = self.self_attention(features)
+        x = self.backbone.layer1(x)
+        x = self.backbone.layer2(x)
+        x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
+        x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
 
-        # Flatten features and pass through the classifier
-        features = features.reshape(features.size(0), -1)  # Flatten
-        x = self.backbone.classifier(features)
+        # Apply self-attention to the feature maps
+        # x = self.self_attention(x)
+
+        # Apply global average pooling
+        x = self.backbone.avgpool(x)
+        x = torch.flatten(x, 1)  # Flatten to (B, 512)
+
+        # Pass through the classifier
+        x = self.backbone.fc(x)
         return x
 
 # STACKING
@@ -455,7 +468,7 @@ if __name__ == '__main__':
     # Load pretrained weights into base models (if available)
     base_models = [base_model_1, base_model_2, base_model_3]
     for i, model in enumerate(base_models):
-        state_dict = torch.load(f'./pre/pretrained/vgg16.pth', map_location='cpu')
+        state_dict = torch.load(f'./pre/pretrained/resnet18.pth', map_location='cpu')
         new_state_dict = {}
         for key, value in state_dict.items():
             new_key = f"backbone.{key}"  # Prefix with 'backbone.'
