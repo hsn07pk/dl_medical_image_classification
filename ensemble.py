@@ -1,5 +1,3 @@
-
-
 import copy
 import os
 import random
@@ -13,14 +11,16 @@ from PIL import Image
 from sklearn.metrics import cohen_kappa_score, precision_score, recall_score, accuracy_score
 from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
-from torchvision.transforms.functional import to_pil_image, adjust_gamma
 from tqdm import tqdm
 import torch.nn.functional as F
-# Hyper Parameters
-batch_size = 24
-num_classes = 5  # 5 DR levels
-learning_rate = 0.0001
-num_epochs = 25
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
+from sklearn.linear_model import LogisticRegression
+
+
+
+
+
+
 
 
 class RetinopathyDataset(Dataset):
@@ -28,14 +28,21 @@ class RetinopathyDataset(Dataset):
         self.ann_file = ann_file
         self.image_dir = image_dir
         self.transform = transform
-
         self.test = test
         self.mode = mode
-
+        self.labels = None  # Initialize labels attribute
+        
         if self.mode == 'single':
             self.data = self.load_data()
         else:
             self.data = self.load_data_dual()
+            
+        # Store labels if not in test mode
+        if not self.test:
+            if self.mode == 'single':
+                self.labels = [d['dr_level'] for d in self.data]
+            else:
+                self.labels = [d['dr_level'] for d in self.data]
 
     def __len__(self):
         return len(self.data)
@@ -161,13 +168,11 @@ class FundRandomRotate:
         return img
 
 
-
 transform_train = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop((210, 210)),
     SLORandomPad((224, 224)),
-    # FundRandomRotate(prob=0.5, degree=30),
-    transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),
+    FundRandomRotate(prob=0.5, degree=30),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.5),
     transforms.ColorJitter(brightness=(0.1, 0.9)),
@@ -182,177 +187,206 @@ transform_test = transforms.Compose([
 ])
 
 
-def train_model_with_boosting(model, train_loader, val_loader, device, criterion, optimizer, lr_scheduler, num_epochs=25, checkpoint_path='model.pth'):
-    best_model = model.state_dict()
-    best_epoch = None
-    best_val_kappa = -1.0
 
-    # Initialize training history
-    training_history = {
-        'train_loss': [],
-        'val_loss': [],
-        'train_accuracy': [],
-        'val_accuracy': []
-    }
 
-    for epoch in range(1, num_epochs + 1):
-        print(f'\nEpoch {epoch}/{num_epochs}')
-        running_loss = []
-        epoch_preds = []
-        epoch_labels = []
 
-        model.train()
-        with tqdm(total=len(train_loader), desc=f'Training', unit=' batch', file=sys.stdout) as pbar:
-            for images, labels in train_loader:
-                images = images.to(device)
-                labels = labels.to(device)
 
-                optimizer.zero_grad()
 
-                outputs = model(images)
-                loss = criterion(outputs, labels.long())
 
-                loss.backward()
-                optimizer.step()
 
-                preds = torch.argmax(outputs, 1)
-                epoch_preds.extend(preds.cpu().numpy())
-                epoch_labels.extend(labels.cpu().numpy())
 
-                running_loss.append(loss.item())
-                pbar.set_postfix({'lr': f'{optimizer.param_groups[0]["lr"]:.1e}', 'Loss': f'{loss.item():.4f}'})
-                pbar.update(1)
+class EnsembleMethods:
+    def __init__(self, models, device):
+        self.models = models
+        self.device = device
+        for model in self.models:
+            model.eval()
 
-        lr_scheduler.step()
-
-        # Calculate epoch metrics
-        epoch_loss = sum(running_loss) / len(running_loss)
-        train_metrics = compute_metrics(epoch_preds, epoch_labels)
-        train_kappa, train_accuracy, train_precision, train_recall = train_metrics
-
-        # Store training metrics
-        training_history['train_loss'].append(epoch_loss)
-        training_history['train_accuracy'].append(train_accuracy)
-
-        # Validation phase
-        model.eval()
-        val_running_loss = []
-        val_preds = []
-        val_labels = []
-
+    def get_features(self, dataloader):
+        """Extract features from all models for a given dataloader"""
+        features_list = []
+        labels_list = []
+        
         with torch.no_grad():
-            for images, labels in val_loader:
-                images = images.to(device)
-                labels = labels.to(device)
+            for batch in tqdm(dataloader, desc="Extracting features"):
+                if isinstance(batch, (tuple, list)) and len(batch) == 2:
+                    images, labels = batch
+                    labels_list.extend(labels.numpy())
+                else:
+                    images = batch
+                
+                if not isinstance(images, list):
+                    images = images.to(self.device)
+                else:
+                    images = [x.to(self.device) for x in images]
+                
+                batch_features = []
+                for model in self.models:
+                    outputs = model(images)
+                    probs = F.softmax(outputs, dim=1)
+                    batch_features.append(probs.cpu().numpy())
+                
+                # Concatenate features from all models
+                combined_features = np.concatenate(batch_features, axis=1)
+                features_list.append(combined_features)
+        
+        features = np.vstack(features_list)
+        if labels_list:
+            return features, np.array(labels_list)
+        return features
 
-                outputs = model(images)
-                val_loss = criterion(outputs, labels.long())
-
-                preds = torch.argmax(outputs, 1)
-                val_preds.extend(preds.cpu().numpy())
-                val_labels.extend(labels.cpu().numpy())
-
-                val_running_loss.append(val_loss.item())
-
-        val_epoch_loss = sum(val_running_loss) / len(val_running_loss)
-        val_metrics = compute_metrics(val_preds, val_labels)
-        val_kappa, val_accuracy, val_precision, val_recall = val_metrics
-
-        # Store validation metrics
-        training_history['val_loss'].append(val_epoch_loss)
-        training_history['val_accuracy'].append(val_accuracy)
-
-        print(f'[Train] Kappa: {train_kappa:.4f} Accuracy: {train_accuracy:.4f} '
-              f'Precision: {train_precision:.4f} Recall: {train_recall:.4f} Loss: {epoch_loss:.4f}')
-        print(f'[Val] Kappa: {val_kappa:.4f} Accuracy: {val_accuracy:.4f} '
-              f'Precision: {val_precision:.4f} Recall: {val_recall:.4f} Loss: {val_epoch_loss:.4f}')
-
-        if val_kappa > best_val_kappa:
-            best_val_kappa = val_kappa
-            best_epoch = epoch
-            best_model = copy.deepcopy(model.state_dict())
-
-    # Save the best model state
-    torch.save(best_model, checkpoint_path)
-    print(f'Best model saved at epoch {best_epoch} with validation kappa: {best_val_kappa:.4f}')
-
-    return model, training_history
-
-
-def evaluate_model(model, test_loader, device, test_only=False, prediction_path='./test_predictions.csv'):
-    model.eval()
-
-    all_preds = []
-    all_labels = []
-    all_image_ids = []
-
-    with tqdm(total=len(test_loader), desc=f'Evaluating', unit=' batch', file=sys.stdout) as pbar:
-        for i, data in enumerate(test_loader):
-
-            if test_only:
-                images = data
-            else:
-                images, labels = data
-
-            if not isinstance(images, list):
-                images = images.to(device)  # single image case
-            else:
-                images = [x.to(device) for x in images]  # dual images case
-
-            with torch.no_grad():
-                outputs = model(images)
-                preds = torch.argmax(outputs, 1)
-
-            if not isinstance(images, list):
-                # single image case
+    def weighted_average(self, dataloader, weights):
+        """Weighted average ensemble prediction"""
+        all_preds = []
+        
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Weighted average prediction"):
+                if isinstance(batch, (tuple, list)):
+                    images = batch[0]
+                else:
+                    images = batch
+                    
+                if not isinstance(images, list):
+                    images = images.to(self.device)
+                else:
+                    images = [x.to(self.device) for x in images]
+                    
+                outputs = [model(images) for model in self.models]
+                outputs = [F.softmax(out, dim=1) for out in outputs]
+                weighted_outputs = sum(w * out for w, out in zip(weights, outputs))
+                preds = torch.argmax(weighted_outputs, 1)
                 all_preds.extend(preds.cpu().numpy())
-                image_ids = [
-                    os.path.basename(test_loader.dataset.data[idx]['img_path']) for idx in
-                    range(i * test_loader.batch_size, i * test_loader.batch_size + len(images))
-                ]
-                all_image_ids.extend(image_ids)
-                if not test_only:
-                    all_labels.extend(labels.numpy())
-            else:
-                # dual images case
-                for k in range(2):
-                    all_preds.extend(preds.cpu().numpy())
-                    image_ids = [
-                        os.path.basename(test_loader.dataset.data[idx][f'img_path{k + 1}']) for idx in
-                        range(i * test_loader.batch_size, i * test_loader.batch_size + len(images[k]))
-                    ]
-                    all_image_ids.extend(image_ids)
-                    if not test_only:
-                        all_labels.extend(labels.numpy())
+                
+        return np.array(all_preds)
 
-            pbar.update(1)
+    def max_voting(self, dataloader):
+        """Max voting ensemble prediction"""
+        all_preds = []
+        
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Max voting prediction"):
+                if isinstance(batch, (tuple, list)):
+                    images = batch[0]
+                else:
+                    images = batch
+                    
+                if not isinstance(images, list):
+                    images = images.to(self.device)
+                else:
+                    images = [x.to(self.device) for x in images]
+                    
+                outputs = [model(images) for model in self.models]
+                preds = [torch.argmax(out, 1) for out in outputs]
+                preds = torch.stack(preds, dim=1)
+                final_preds = torch.mode(preds, dim=1)[0]
+                all_preds.extend(final_preds.cpu().numpy())
+                
+        return np.array(all_preds)
 
-    # Save predictions to csv file for Kaggle online evaluation
-    if test_only:
-        df = pd.DataFrame({
-            'ID': all_image_ids,
-            'TARGET': all_preds
-        })
-        df.to_csv(prediction_path, index=False)
-        print(f'[Test] Save predictions to {os.path.abspath(prediction_path)}')
-    else:
-        metrics = compute_metrics(all_preds, all_labels)
-        return metrics
+    def train_stacking(self, train_loader, val_loader):
+        """Train stacking ensemble"""
+        print("Training stacking ensemble...")
+        
+        # Get features for training and validation
+        X_train, y_train = self.get_features(train_loader)
+        X_val, y_val = self.get_features(val_loader)
+        
+        # Define base models for stacking
+        base_models = [
+            ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+            ('gb', GradientBoostingClassifier(n_estimators=100, random_state=42))
+        ]
+        
+        # Define meta-classifier
+        meta_classifier = LogisticRegression(random_state=42)
+        
+        # Create and train stacking classifier
+        self.stacking_classifier = StackingClassifier(
+            estimators=base_models,
+            final_estimator=meta_classifier,
+            cv=5
+        )
+        
+        self.stacking_classifier.fit(X_train, y_train)
+        
+        # Evaluate on validation set
+        val_preds = self.stacking_classifier.predict(X_val)
+        return val_preds
+
+    def train_boosting(self, train_loader, val_loader):
+        """Train boosting ensemble"""
+        print("Training boosting ensemble...")
+        
+        # Get features for training and validation
+        X_train, y_train = self.get_features(train_loader)
+        X_val, y_val = self.get_features(val_loader)
+        
+        # Create and train boosting classifier
+        self.boosting_classifier = GradientBoostingClassifier(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=3,
+            random_state=42
+        )
+        
+        self.boosting_classifier.fit(X_train, y_train)
+        
+        # Evaluate on validation set
+        val_preds = self.boosting_classifier.predict(X_val)
+        return val_preds
+
+    def train_bagging(self, train_loader, val_loader):
+        """Train bagging ensemble"""
+        print("Training bagging ensemble...")
+        
+        # Get features for training and validation
+        X_train, y_train = self.get_features(train_loader)
+        X_val, y_val = self.get_features(val_loader)
+        
+        # Create and train random forest (which uses bagging)
+        self.bagging_classifier = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=None,
+            min_samples_split=2,
+            random_state=42
+        )
+        
+        self.bagging_classifier.fit(X_train, y_train)
+        
+        # Evaluate on validation set
+        val_preds = self.bagging_classifier.predict(X_val)
+        return val_preds
+
+    def predict_stacking(self, test_loader):
+        """Predict using stacking ensemble"""
+        X_test = self.get_features(test_loader)
+        return self.stacking_classifier.predict(X_test)
+
+    def predict_boosting(self, test_loader):
+        """Predict using boosting ensemble"""
+        X_test = self.get_features(test_loader)
+        return self.boosting_classifier.predict(X_test)
+
+    def predict_bagging(self, test_loader):
+        """Predict using bagging ensemble"""
+        X_test = self.get_features(test_loader)
+        return self.bagging_classifier.predict(X_test)
+
+def evaluate_predictions(y_true, y_pred, method_name):
+    """Evaluate predictions using multiple metrics"""
+    metrics = {
+        'accuracy': accuracy_score(y_true, y_pred),
+        'kappa': cohen_kappa_score(y_true, y_pred, weights='quadratic'),
+        'precision': precision_score(y_true, y_pred, average='weighted', zero_division=0),
+        'recall': recall_score(y_true, y_pred, average='weighted', zero_division=0)
+    }
+    
+    print(f"\n{method_name} Metrics:")
+    for metric, value in metrics.items():
+        print(f"{metric.capitalize()}: {value:.4f}")
+    return metrics
 
 
-def compute_metrics(preds, labels, per_class=False):
-    kappa = cohen_kappa_score(labels, preds, weights='quadratic')
-    accuracy = accuracy_score(labels, preds)
-    precision = precision_score(labels, preds, average='weighted', zero_division=0)
-    recall = recall_score(labels, preds, average='weighted', zero_division=0)
-
-    # Calculate and print precision and recall for each class
-    if per_class:
-        precision_per_class = precision_score(labels, preds, average=None, zero_division=0)
-        recall_per_class = recall_score(labels, preds, average=None, zero_division=0)
-        return kappa, accuracy, precision, recall, precision_per_class, recall_per_class
-
-    return kappa, accuracy, precision, recall
 
 
 class SelfAttention(nn.Module):
@@ -382,9 +416,51 @@ class SelfAttention(nn.Module):
         # Apply learnable scaling and residual connection
         out = self.gamma * out + x
         return out
+    
+   
+
+# only Last 5 layers unfrozen 
+class MyVGG(nn.Module):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
+        super().__init__()
+
+        # Load the pretrained VGG16 model
+        self.backbone = models.vgg16(pretrained=True)
+        
+        # Unfreeze all layers
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+            
+        self.self_attention = SelfAttention(in_channels=512)
+
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.classifier[0].in_features
+        
+        # Replace the classifier with a custom one
+        self.backbone.classifier = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        # Forward pass through the VGG16 backbone
+        features = self.backbone.features(x)
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
+        return x
 
 
-class MyModel(nn.Module):
+class MyResnet18(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
@@ -440,19 +516,84 @@ class MyModel(nn.Module):
 
 
 
+class MyResnet34(nn.Module):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
+        super().__init__()
+
+        self.backbone = models.resnet34(pretrained=True)
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.fc.in_features
+
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+
+        # Self-attention layer (applied to intermediate feature maps)
+        self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
+
+
+
+        # Replace the classifier with a custom one
+        self.backbone.fc = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        # Extract intermediate feature maps from the backbone
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        x = self.backbone.layer1(x)
+        x = self.backbone.layer2(x)
+        # x = self.backbone.layer3(x)
+        # x = self.backbone.layer4(x)
+
+        x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
+
+        x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
+
+        # Apply self-attention to the feature maps
+        # x = self.self_attention(x)
+
+        # Apply global average pooling
+        x = self.backbone.avgpool(x)
+        x = torch.flatten(x, 1)  # Flatten to (B, 512)
+
+        # Pass through the classifier
+        x = self.backbone.fc(x)
+        return x
+
 
 
 if __name__ == '__main__':
-    # Choose between 'single image' and 'dual images' pipeline
-    mode = 'single'  # forward single image to the model each time 
-    assert mode in ('single', 'dual')
+    # Hyper Parameters
+    batch_size = 24
+    num_classes = 5
+    learning_rate = 0.0001
+    num_epochs = 15
+    mode = 'single'
 
-    # Define the model
-    if mode == 'single':
-        model = MyModel()
-
-    print(model, '\n')
     print('Pipeline Mode:', mode)
+
+    # Use GPU if available
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Device:', device)
+
+    # Initialize models
+    vggModel = MyVGG(num_classes=num_classes)
+    resnet18Model = MyResnet18(num_classes=num_classes)
+    resnet34Model = MyResnet34(num_classes=num_classes)
 
     # Create datasets
     train_dataset = RetinopathyDataset('./DeepDRiD/train.csv', './DeepDRiD/train/', transform_train, mode)
@@ -464,30 +605,82 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    # Define the CrossEntropyLoss
-    criterion = nn.CrossEntropyLoss()
-
-    # Use GPU device if possible
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('Device:', device)
-    
     # Load pretrained weights
-    state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = f"backbone.{key}"
-        new_state_dict[new_key] = value
-    
-    model.load_state_dict(new_state_dict, strict=False)
-    model = model.to(device)
+    try:
+        vggModel.load_state_dict(torch.load('./model_vgg.pth', map_location=device))
+        resnet18Model.load_state_dict(torch.load('./model_resnet18.pth', map_location=device))
+        resnet34Model.load_state_dict(torch.load('./model_resnet34.pth', map_location=device))
+        print("Loaded pretrained weights successfully")
+    except FileNotFoundError:
+        print("No pretrained weights found. Please train the models first.")
+        sys.exit(1)
 
-    # Optimizer and Learning rate scheduler
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    # Move models to device
+    models = [vggModel.to(device), resnet18Model.to(device), resnet34Model.to(device)]
+    
+    try:
+        # Initialize ensemble methods
+        ensemble = EnsembleMethods(models, device)
+        val_labels = np.array(val_dataset.labels)
+        
+        # 1. Weighted Average
+        print("\nEvaluating Weighted Average Ensemble...")
+        weights = [0.3, 0.5, 0.2]  # Adjust based on individual model performance
+        weighted_preds = ensemble.weighted_average(val_loader, weights)
+        weighted_metrics = evaluate_predictions(val_labels, weighted_preds, "Weighted Average")
+        
+        # 2. Max Voting
+        print("\nEvaluating Max Voting Ensemble...")
+        max_voting_preds = ensemble.max_voting(val_loader)
+        max_voting_metrics = evaluate_predictions(val_labels, max_voting_preds, "Max Voting")
+        
+        # 3. Stacking
+        print("\nEvaluating Stacking Ensemble...")
+        stacking_preds = ensemble.train_stacking(train_loader, val_loader)
+        stacking_metrics = evaluate_predictions(val_labels, stacking_preds, "Stacking")
+        
+        # 4. Boosting
+        print("\nEvaluating Boosting Ensemble...")
+        boosting_preds = ensemble.train_boosting(train_loader, val_loader)
+        boosting_metrics = evaluate_predictions(val_labels, boosting_preds, "Boosting")
+        
+        # 5. Bagging
+        print("\nEvaluating Bagging Ensemble...")
+        bagging_preds = ensemble.train_bagging(train_loader, val_loader)
+        bagging_metrics = evaluate_predictions(val_labels, bagging_preds, "Bagging")
+        
+        # Generate test predictions
+        print("\nGenerating test predictions...")
+        test_predictions = {
+            'weighted': ensemble.weighted_average(test_loader, weights),
+            'max_voting': ensemble.max_voting(test_loader),
+            'stacking': ensemble.predict_stacking(test_loader),
+            'boosting': ensemble.predict_boosting(test_loader),
+            'bagging': ensemble.predict_bagging(test_loader)
+        }
+        
+        # Save all predictions
+        for method, preds in test_predictions.items():
+            df = pd.DataFrame({
+                'ID': [os.path.basename(test_dataset.data[i]['img_path']) for i in range(len(preds))],
+                'TARGET': preds
+            })
+            df.to_csv(f'./{method}_predictions.csv', index=False)
+            print(f"Saved {method} predictions")
+        
+        # Save ensemble metrics
+        metrics_df = pd.DataFrame({
+            'Weighted': weighted_metrics,
+            'MaxVoting': max_voting_metrics,
+            'Stacking': stacking_metrics,
+            'Boosting': boosting_metrics,
+            'Bagging': bagging_metrics
+        })
+        metrics_df.to_csv('./ensemble_metrics.csv')
+        print("\nSaved ensemble metrics to ensemble_metrics.csv")
 
-    
-   
-    
-    # Make predictions on testing set
-    print("\nGenerating test predictions...")
-    evaluate_model(model, test_loader, device, test_only=True)
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        print("Traceback:")
+        import traceback
+        traceback.print_exc()
