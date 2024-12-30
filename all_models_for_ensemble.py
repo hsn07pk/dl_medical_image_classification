@@ -13,12 +13,13 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models, transforms
 from torchvision.transforms.functional import to_pil_image
 from tqdm import tqdm
+import torch.nn.functional as F
 
 # Hyper Parameters
 batch_size = 24
 num_classes = 5  # 5 DR levels
 learning_rate = 0.0001
-num_epochs = 10
+num_epochs = 15
 
 
 class RetinopathyDataset(Dataset):
@@ -326,25 +327,49 @@ def compute_metrics(preds, labels, per_class=False):
     return kappa, accuracy, precision, recall
 
 
+class SelfAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling parameter
+
+    def forward(self, x):
+        batch_size, C, H, W = x.size()  # Input feature map dimensions: (B, C, H, W)
+
+        # Query, Key, and Value transformations
+        query = self.query_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C//8)
+        key = self.key_conv(x).view(batch_size, -1, H * W)  # Shape: (B, C//8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, H * W).permute(0, 2, 1)  # Shape: (B, H*W, C)
+
+        # Compute attention weights
+        attention = torch.bmm(query, key)  # Shape: (B, H*W, H*W)
+        attention = F.softmax(attention, dim=-1)  # Normalize attention weights across spatial dimensions
+
+        # Weighted sum of values
+        out = torch.bmm(attention, value).permute(0, 2, 1)  # Shape: (B, C, H*W)
+        out = out.view(batch_size, C, H, W)  # Reshape back to spatial dimensions
+
+        # Apply learnable scaling and residual connection
+        out = self.gamma * out + x
+        return out
+    
+    
 
 # only Last 5 layers unfrozen 
-class MyModel(nn.Module):
+class MyVGG(nn.Module):
     def __init__(self, num_classes=5, dropout_rate=0.52):
         super().__init__()
 
         # Load the pretrained VGG16 model
         self.backbone = models.vgg16(pretrained=True)
         
-        # Freeze all layers by default
+        # Unfreeze all layers
         for param in self.backbone.parameters():
-            param.requires_grad = False
-
-        # Unfreeze the last 5 layers
-        # Unfreeze the last 5 layers from `features` and `classifier`
-        unfrozen_layers = list(self.backbone.features[-5:]) + list(self.backbone.classifier[-5:])
-        for layer in unfrozen_layers:
-            for param in layer.parameters():
-                param.requires_grad = True
+            param.requires_grad = True
+            
+        self.self_attention = SelfAttention(in_channels=512)
 
         # Get the input features for the classifier dynamically
         in_features = self.backbone.classifier[0].in_features
@@ -362,7 +387,129 @@ class MyModel(nn.Module):
 
     def forward(self, x):
         # Forward pass through the VGG16 backbone
-        x = self.backbone(x)
+        features = self.backbone.features(x)
+
+        # Apply self-attention
+        features = self.self_attention(features)
+
+        # Flatten features and pass through the classifier
+        features = features.reshape(features.size(0), -1)  # Flatten
+        x = self.backbone.classifier(features)
+        return x
+
+
+class MyResnet18(nn.Module):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
+        super().__init__()
+
+        self.backbone = models.resnet18(pretrained=True)
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.fc.in_features
+
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+
+        # Self-attention layer (applied to intermediate feature maps)
+        self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
+
+        # Replace the classifier with a custom one
+        self.backbone.fc = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        # Extract intermediate feature maps from the backbone
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        x = self.backbone.layer1(x)
+        x = self.backbone.layer2(x)
+        x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
+        x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
+
+        # Apply self-attention to the feature maps
+        # x = self.self_attention(x)
+
+        # Apply global average pooling
+        x = self.backbone.avgpool(x)
+        x = torch.flatten(x, 1)  # Flatten to (B, 512)
+
+        # Pass through the classifier
+        x = self.backbone.fc(x)
+        return x
+
+
+
+
+
+class MyResnet34(nn.Module):
+    def __init__(self, num_classes=5, dropout_rate=0.52):
+        super().__init__()
+
+        self.backbone = models.resnet34(pretrained=True)
+        # Get the input features for the classifier dynamically
+        in_features = self.backbone.fc.in_features
+
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+
+        # Self-attention layer (applied to intermediate feature maps)
+        self.self_attention = SelfAttention(in_channels=512)
+        self.self_attention3 = SelfAttention(in_channels=256)
+        self.self_attention4 = SelfAttention(in_channels=512)
+
+
+
+        # Replace the classifier with a custom one
+        self.backbone.fc = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        # Extract intermediate feature maps from the backbone
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        x = self.backbone.layer1(x)
+        x = self.backbone.layer2(x)
+        # x = self.backbone.layer3(x)
+        # x = self.backbone.layer4(x)
+
+        x = self.backbone.layer3(x)
+        x = self.self_attention3(x)
+
+        x = self.backbone.layer4(x)
+        x = self.self_attention4(x)
+
+        # Apply self-attention to the feature maps
+        # x = self.self_attention(x)
+
+        # Apply global average pooling
+        x = self.backbone.avgpool(x)
+        x = torch.flatten(x, 1)  # Flatten to (B, 512)
+
+        # Pass through the classifier
+        x = self.backbone.fc(x)
         return x
 
 
@@ -371,16 +518,13 @@ class MyModel(nn.Module):
 if __name__ == '__main__':
 
     mode = 'single'  # forward single image to the model each time 
-  
-    assert mode in ('single', 'dual')
 
-    # Define the model
-    if mode == 'single':
-        model = MyModel()
-    # else:
-    #     model = MyDualModel()
+    vggModel = MyVGG()
+    resnet18Model = MyResnet18()
+    resnet34Model = MyResnet34()
 
-    print(model, '\n')
+
+    print(vggModel, '\n')
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -400,30 +544,53 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
     
-    state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    
-
-    
-    model.load_state_dict(state_dict, strict=False)
+    vgg_state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
+    resnet18_state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
+    resnet34_state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
     
     
+    vggModel.load_state_dict(vgg_state_dict, strict=False)
+    resnet18Model.load_state_dict(resnet18_state_dict, strict=False)
+    resnet34Model.load_state_dict(resnet34_state_dict, strict=False)
 
     # Move class weights to the device
-    model = model.to(device)
+    vggModel = vggModel.to(device)
+    resnet18Model = resnet18Model.to(device)
+    resnet34Model = resnet34Model.to(device)
 
     # Optimizer and Learning rate scheduler
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    optimizerVGG = torch.optim.Adam(params=vggModel.parameters(), lr=learning_rate)
+    optimizerResnet18 = torch.optim.Adam(params=resnet18Model.parameters(), lr=learning_rate)
+    optimizerResnet34 = torch.optim.Adam(params=resnet34Model.parameters(), lr=learning_rate)
+    
+    
+    lr_scheduler1 = torch.optim.lr_scheduler.StepLR(optimizerVGG, step_size=10, gamma=0.1)
+    lr_scheduler2 = torch.optim.lr_scheduler.StepLR(optimizerResnet18, step_size=10, gamma=0.1)
+    lr_scheduler3 = torch.optim.lr_scheduler.StepLR(optimizerResnet34, step_size=10, gamma=0.1)
 
     # Train and evaluate the model with the training and validation set
-    model = train_model(
-        model, train_loader, val_loader, device, criterion, optimizer,
-        lr_scheduler=lr_scheduler, num_epochs=num_epochs,
+    vggModel = train_model(
+        vggModel, train_loader, val_loader, device, criterion, optimizerVGG,
+        lr_scheduler=lr_scheduler1, num_epochs=num_epochs,
         checkpoint_path='./model_vgg.pth'
     )
+    
+    
+    resnet18Model = train_model(
+        resnet18Model, train_loader, val_loader, device, criterion, optimizerResnet18,
+        lr_scheduler=lr_scheduler2, num_epochs=num_epochs,
+        checkpoint_path='./model_resnet18.pth'
+    )
+    
+    resnet34Model = train_model(
+        resnet34Model, train_loader, val_loader, device, criterion, optimizerResnet34,
+        lr_scheduler=lr_scheduler3, num_epochs=num_epochs,
+        checkpoint_path='./model_resnet34.pth'
+    )
 
-    # Load the pretrained checkpoint
 
 
     # Make predictions on testing set and save the prediction results
-    evaluate_model(model, test_loader, device, test_only=True)
+    evaluate_model(vggModel, test_loader, device, test_only=True, prediction_path='./test_predictions_vgg.csv')
+    evaluate_model(resnet18Model, test_loader, device, test_only=True, prediction_path='./test_predictions_resnet18.csv')
+    evaluate_model(resnet34Model, test_loader, device, test_only=True, prediction_path='./test_predictions_resnet34.csv')
