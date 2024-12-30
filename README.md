@@ -91,37 +91,80 @@ part d... Stacking, Boosting, Weighted Average, Max Voting, Bagging from the res
 
 
 
+Evaluating Weighted Average Ensemble...
+Weighted average prediction: 100%|█████████████████████████████████████████████████| 17/17 [00:03<00:00,  4.70it/s] 
+
+Weighted Average Metrics:
+Accuracy: 0.6800
+Kappa: 0.8043
+Precision: 0.6626
+Recall: 0.6800
+
+Evaluating Max Voting Ensemble...
+Max voting prediction: 100%|████████████████████████████████████████████████████████| 17/17 [00:01<00:00,  8.92it/s] 
+
+Max Voting Metrics:
+Accuracy: 0.6600
+Kappa: 0.7742
+Precision: 0.6471
+Recall: 0.6600
+
+Evaluating Stacking Ensemble...
+Training stacking ensemble...
+Extracting features: 100%|██████████████████████████████████████████████████████████| 50/50 [00:06<00:00,  7.90it/s] 
+Extracting features: 100%|██████████████████████████████████████████████████████████| 17/17 [00:01<00:00,  8.72it/s] 
+
+Stacking Metrics:
+Accuracy: 0.6400
+Kappa: 0.7941
+Precision: 0.6367
+Recall: 0.6400
+
+Evaluating Boosting Ensemble...
+Training boosting ensemble...
+Extracting features: 100%|██████████████████████████████████████████████████████████| 50/50 [00:06<00:00,  7.62it/s] 
+Extracting features: 100%|██████████████████████████████████████████████████████████| 17/17 [00:01<00:00,  8.85it/s] 
+
+Boosting Metrics:
+Accuracy: 0.6650
+Kappa: 0.8063
+Precision: 0.6646
+Recall: 0.6650
+
+Evaluating Bagging Ensemble...
+Training bagging ensemble...
+Extracting features: 100%|██████████████████████████████████████████████████████████| 50/50 [00:06<00:00,  7.68it/s] 
+Extracting features: 100%|██████████████████████████████████████████████████████████| 17/17 [00:01<00:00,  8.77it/s] 
+
+Bagging Metrics:
+Accuracy: 0.6525
+Kappa: 0.8047
+Precision: 0.6585
+Recall: 0.6525
 
 
 
+On test cases: 
+
+Bagging: 79.60
+Boosting: 78.61
+Max_voting: 85.28
+Stacking: 79.52
+Weighted Predictions: 84.66 
 
 
+The base models used for this had the following results on the test case:
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Resnet18: 83.91%
+Resnet34: 78.73%
+VGG16: 84.17%
 
 
 
 
 ______________________________________________________________________
-WE TRIED TO DO ENSEMBLE WITH MULTIPLE INSTANCES OF THE SAME MODEL
+WE TRIED TO DO ENSEMBLE WITH MULTIPLE INSTANCES OF THE SAME MODEL. Just to test would it increase the result.
 
 # BAGGING
 
