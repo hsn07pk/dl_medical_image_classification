@@ -87,12 +87,46 @@ tried self attention mechanism improved a little to : 84. 42%
 resnet 18: tried unfrozen layers and self attention mechanism with preloaded weights on the big dataset and then fine tuned on the main dataset: we got 83.98 and 83.49
 
 
-part d... Stacking, Boosting, Weighted Average, Max Voting, Bagging
+part d... Stacking, Boosting, Weighted Average, Max Voting, Bagging from the results of the 3 models
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+______________________________________________________________________
+WE TRIED TO DO ENSEMBLE WITH MULTIPLE INSTANCES OF THE SAME MODEL
 
 # BAGGING
 
 ## resnet 18
-implemented bagging ensemble with pretrained weights, and unfrozen layers + self attention mechanism. 5 model bagging: result: with 2 ephos: 86.88 
+implemented bagging ensemble with pretrained weights, and unfrozen layers + self attention mechanism. 5 model bagging: result:5 models with 2 ephos: 86.88 
 tried same thing with 15 ephos: got 82.11
 
 res18 tried 3 ephos with 10 models: 85.05
@@ -119,7 +153,7 @@ Tried VGG16 with bagging (all layers unfrozen, self attention added):res: 84:63
 ## VGG16
 We implemented ensemble learning Boosting: we got 85.02% on the test case. We tried same boosting but on vgg that had frozen layers: we got 83.72% results 
 
-We improved the code on vgg also with frozen layers again: we got: 
+We improved the code on vgg also with frozen layers again: we got: 80ish
 
 We added an augmentation to vgg all layers unfrozen: 
 transforms.RandomApply([transforms.Lambda(lambda img: adjust_gamma(img, gamma=1.5))], p=0.3),  # Gamma correction
@@ -197,6 +231,4 @@ Test Results: 0.8282
 1. CONFIG={'models':{'vgg16':False,'resnet18':False,'resnet34':True},'ensemble_methods':{'stacking':False,'boosting':False,'weighted_average':False,'max_voting':True,'bagging':False},'preprocessing':{'ben_graham':True,'circle_crop':True,'clahe':True,'gaussian_blur':True,'sharpen':True}}
 2. Training Best Kappa: 
 3. Kaggle Score: 78,84
-
-
 
