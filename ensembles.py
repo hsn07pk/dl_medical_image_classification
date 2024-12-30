@@ -572,18 +572,14 @@ def evaluate_ensemble(predictions, labels):
 
 
 
-
-
 if __name__ == '__main__':
+    mode = 'single'  # forward single image to the model each time
 
-    mode = 'single'  # forward single image to the model each time 
-
+    # Initialize models
     vggModel = MyVGG()
     resnet18Model = MyResnet18()
     resnet34Model = MyResnet34()
 
-
-    print(vggModel, '\n')
     print('Pipeline Mode:', mode)
 
     # Create datasets
@@ -599,57 +595,68 @@ if __name__ == '__main__':
     # Define the weighted CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
 
-    # Use GPU device is possible
+    # Use GPU device if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
-    
-    vgg_state_dict = torch.load('./pre/pretrained/vgg16.pth', map_location='cpu')
-    resnet18_state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
-    resnet34_state_dict = torch.load('./pre/pretrained/resnet18.pth', map_location='cpu')
-    
-    
-    vggModel.load_state_dict(vgg_state_dict, strict=False)
-    resnet18Model.load_state_dict(resnet18_state_dict, strict=False)
-    resnet34Model.load_state_dict(resnet34_state_dict, strict=False)
 
-    # Move class weights to the device
+    # Load pretrained weights
+    vggModel.load_state_dict(torch.load('./pre/pretrained/vgg16.pth', map_location='cpu'), strict=False)
+    resnet18Model.load_state_dict(torch.load('./pre/pretrained/resnet18.pth', map_location='cpu'), strict=False)
+    resnet34Model.load_state_dict(torch.load('./pre/pretrained/resnet18.pth', map_location='cpu'), strict=False)
+
+    # Move models to device
     vggModel = vggModel.to(device)
     resnet18Model = resnet18Model.to(device)
     resnet34Model = resnet34Model.to(device)
 
-    # Optimizer and Learning rate scheduler
-    optimizerVGG = torch.optim.Adam(params=vggModel.parameters(), lr=learning_rate)
-    optimizerResnet18 = torch.optim.Adam(params=resnet18Model.parameters(), lr=learning_rate)
-    optimizerResnet34 = torch.optim.Adam(params=resnet34Model.parameters(), lr=learning_rate)
-    
-    
-    lr_scheduler1 = torch.optim.lr_scheduler.StepLR(optimizerVGG, step_size=10, gamma=0.1)
-    lr_scheduler2 = torch.optim.lr_scheduler.StepLR(optimizerResnet18, step_size=10, gamma=0.1)
-    lr_scheduler3 = torch.optim.lr_scheduler.StepLR(optimizerResnet34, step_size=10, gamma=0.1)
+    # Optimizers and learning rate schedulers
+    optimizers = [
+        torch.optim.Adam(vggModel.parameters(), lr=learning_rate),
+        torch.optim.Adam(resnet18Model.parameters(), lr=learning_rate),
+        torch.optim.Adam(resnet34Model.parameters(), lr=learning_rate)
+    ]
+    lr_schedulers = [
+        torch.optim.lr_scheduler.StepLR(optimizers[0], step_size=10, gamma=0.1),
+        torch.optim.lr_scheduler.StepLR(optimizers[1], step_size=10, gamma=0.1),
+        torch.optim.lr_scheduler.StepLR(optimizers[2], step_size=10, gamma=0.1)
+    ]
 
-    # Train and evaluate the model with the training and validation set
-    vggModel = train_model(
-        vggModel, train_loader, val_loader, device, criterion, optimizerVGG,
-        lr_scheduler=lr_scheduler1, num_epochs=num_epochs,
-        checkpoint_path='./model_vgg.pth'
+    # Train and save each model
+    models = [vggModel, resnet18Model, resnet34Model]
+    model_paths = ['./model_vgg.pth', './model_resnet18.pth', './model_resnet34.pth']
+
+    for i, model in enumerate(models):
+        print(f"Training model {i + 1}/{len(models)}")
+        models[i] = train_model(
+            model, train_loader, val_loader, device, criterion, optimizers[i],
+            lr_scheduler=lr_schedulers[i], num_epochs=num_epochs,
+            checkpoint_path=model_paths[i]
+        )
+        torch.save(models[i].state_dict(), model_paths[i])
+
+    # Reload trained models (ensures no accidental parameter updates)
+    for i, model in enumerate(models):
+        model.load_state_dict(torch.load(model_paths[i], map_location=device))
+        model.eval()
+
+    # Ensemble methods
+    print("Evaluating ensembles...")
+    weights = [0.3, 0.5, 0.2]  # Example weights for weighted averaging
+
+    # Weighted Average Ensemble
+    weighted_preds = weighted_average_ensemble(test_loader, models, weights, device)
+    print("Weighted Average Accuracy:", evaluate_ensemble(weighted_preds, test_dataset.labels))
+
+    # Max Voting Ensemble
+    max_voting_preds = max_voting_ensemble(test_loader, models, device)
+    print("Max Voting Accuracy:", evaluate_ensemble(max_voting_preds, test_dataset.labels))
+
+    # Save predictions for each ensemble method
+    pd.DataFrame({'ID': range(len(weighted_preds)), 'TARGET': weighted_preds}).to_csv(
+        './weighted_predictions.csv', index=False
     )
-    
-    
-    resnet18Model = train_model(
-        resnet18Model, train_loader, val_loader, device, criterion, optimizerResnet18,
-        lr_scheduler=lr_scheduler2, num_epochs=num_epochs,
-        checkpoint_path='./model_resnet18.pth'
-    )
-    
-    resnet34Model = train_model(
-        resnet34Model, train_loader, val_loader, device, criterion, optimizerResnet34,
-        lr_scheduler=lr_scheduler3, num_epochs=num_epochs,
-        checkpoint_path='./model_resnet34.pth'
+    pd.DataFrame({'ID': range(len(max_voting_preds)), 'TARGET': max_voting_preds}).to_csv(
+        './max_voting_predictions.csv', index=False
     )
 
-
-
-    # Make predictions on testing set and save the prediction results
-    evaluate_model(vggModel, test_loader, device, test_only=True, prediction_path='./test_predictions_vgg.csv')
-    evaluate_model(resnet18Model, test_loader, device, test_only=True, prediction_path='./test_predictions_resnet18.csv')
-    evaluate_model(resnet34Model, test_loader, device, test_only=True, prediction_path='./test_predictions_resnet34.csv')
+    print("Predictions saved for ensemble methods.")
