@@ -5,6 +5,8 @@
 
 This repository implements deep learning techniques to classify medical images, particularly diabetic retinopathy detection. The project leverages transfer learning, advanced preprocessing methods, and ensemble learning techniques to enhance model performance and interpretability.
 
+## You will find all the submission materials here in the repo including the visualization results and also the pth files for the models we trained.
+
 ---
 
 ## Repository Structure
