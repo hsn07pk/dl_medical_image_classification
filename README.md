@@ -1,107 +1,163 @@
+# EyeAI-Retinopathy-Detection
 
-# Deep Learning for Medical Image Classification
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
 
+## 🔍 Overview
 
-## You will find all the submission materials here in the repo including the visualization results and also the pth files for the models we trained.
+EyeAI is an advanced deep learning system designed to detect and classify diabetic retinopathy from retinal images. Using state-of-the-art transfer learning and ensemble techniques, the system achieves high accuracy in identifying different stages of retinopathy, from mild to proliferative DR.
 
+### Key Features
+- Multi-model ensemble learning with ResNet and VGG architectures
+- Advanced image preprocessing techniques
+- Explainable AI visualizations using GradCAM
+- Comprehensive performance metrics including Cohen's Kappa
 
-## Overview
+## 🏗️ Project Structure
 
-This repository implements deep learning techniques to classify medical images, particularly diabetic retinopathy detection. The project leverages transfer learning, advanced preprocessing methods, and ensemble learning techniques to enhance model performance and interpretability.
+```
+EyeAI-Retinopathy-Detection/
+├── bagging/
+│   ├── resnet18Bagging.py
+│   ├── resnet34Bagging.py
+│   └── vgg16Bagging.py
+├── boosting/
+│   ├── resnet18Boosting.py
+│   ├── resnet34Boosting.py
+│   └── vgg16Boosting.py
+├── stacking/
+│   ├── resnet18Stacking.py
+│   ├── resnet34Stacking.py
+│   └── vgg16Stacking.py
+├── aio.py
+├── visualizations/
+│   ├── gradcam/
+│   └── training_metrics/
+├── trained_models/
+│   ├── resnet18/
+│   ├── resnet34/
+│   └── vgg16/
+├── requirements.txt
+└── README.md
+```
 
+## 🛠️ Installation
 
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/EyeAI-Retinopathy-Detection.git
+cd EyeAI-Retinopathy-Detection
+```
 
----
+2. Create and activate virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-## Repository Structure
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-- **`bagging/`**  
-  Contains scripts for bagging ensemble learning with ResNet18, ResNet34, and VGG16.
+## 📊 Data Preparation
 
-- **`boosting/`**  
-  Implements boosting methods for the same models.
+1. Download the DeepDRiD dataset from the provided source
+2. Place the dataset in the appropriate directory:
+```bash
+mkdir data
+mv downloaded_dataset data/deepdrid
+```
 
-- **`stacking/`**  
-  Scripts for stacking ensemble methods applied to the selected models.
+## 🚀 Running the System
 
-- **`aio.py`**  
-  A configurable all-in-one script that integrates preprocessing methods, ensemble techniques, and model training settings.
+### Quick Start with All-in-One Script
+```bash
+python aio.py
+```
 
-- **`visualizations/`**  
-  Includes tools and results for visualizations such as training/validation loss graphs and GradCAM-based explainable AI outputs.
+### Running Specific Ensemble Methods
 
-- **`trained_models/`**  
-  This folder contains the trained models for ResNet18, ResNet34, and VGG16. Models are stored based on the ensemble technique and preprocessing configurations.
+#### Bagging
+```bash
+cd bagging
+python resnet18Bagging.py
+```
 
----
+#### Boosting
+```bash
+cd boosting
+python resnet18Boosting.py
+```
 
-## How to Run
+#### Stacking
+```bash
+cd stacking
+python resnet18Stacking.py
+```
 
-### Prerequisites
-- Python 3.10+
-- Install the required dependencies using:
-  ```bash
-  pip install -r requirements.txt
-  ```
+## 🔧 Model Configuration
 
-### Running the Code
-
-#### Using All-in-One Configuration (`aio.py`)
-1. **Run the Main Script**:  
-   Execute the `aio.py` file to perform the tasks based on pre-defined configurations:  
-   ```bash
-   python aio.py
-   ```
-2. **Customize Configurations**:  
-   Update `aio.py` for specific preprocessing techniques, ensemble methods, or model choices.
-
-#### Running Specific Ensemble Techniques
-1. **Navigate to the Folder**:  
-   Go to the folder corresponding to the desired ensemble technique (`bagging/`, `boosting/`, or `stacking/`).
-
-2. **Run Model-Specific Files**:  
-   Each folder contains separate scripts for ResNet18, ResNet34, and VGG16. Execute the appropriate file.  
-   Example for bagging with ResNet18:  
-   ```bash
-   cd bagging
-   python resnet18Bagging.py
-   ```
-   Replace `resnet18Bagging.py` with `resnet34Bagging.py` or `vgg16Bagging.py` for other models.
-
----
-
-## Features
-
-### 1. Transfer Learning
-Fine-tuned the following pre-trained models:
+### Available Models
 - ResNet18
 - ResNet34
 - VGG16
 
-Trained on the DeepDRiD dataset to improve diabetic retinopathy detection.
+### Preprocessing Options
+- Ben Graham Preprocessing
+- Circle Cropping
+- CLAHE
+- Gaussian Blur
+- Image Sharpening
 
-### 2. Image Preprocessing
-Explored techniques for enhancing input data:
-- **Ben Graham Preprocessing**
-- **Circle Cropping**
-- **CLAHE** (Contrast Limited Adaptive Histogram Equalization)
-- **Gaussian Blur** and **Sharpening**
-
-### 3. Ensemble Learning
-Implemented the following ensemble methods:
+### Ensemble Techniques
 - Bagging
 - Boosting
 - Stacking
 
-### 4. Explainable AI and Visualizations
-- **GradCAM**: Highlights influential regions in medical images for decision-making.
-- **Graphs**: Tracks training/validation accuracy and loss over epochs.
+## 📈 Performance Metrics
 
----
+The system evaluates performance using:
+- Cohen's Kappa Score
+- Accuracy
+- Loss Metrics
+- ROC-AUC Curves
 
-## Results
+## 🎯 Results Visualization
 
-- **Metrics**: Evaluated using Cohen’s Kappa score, accuracy, and loss.
-- **Ensemble Performance**: Demonstrated notable improvements compared to single models.
-- **Visual Insights**: GradCAM effectively identified retinal regions critical for classification.
+### Training Metrics
+```bash
+python visualizations/plot_metrics.py
+```
 
+### Generate GradCAM Visualizations
+```bash
+python visualizations/generate_gradcam.py --model resnet18 --image_path path/to/image
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit changes
+4. Push to the branch
+5. Create a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## 📚 References
+
+- [DeepDRiD Challenge](https://www.sciencedirect.com/science/article/pii/S2666389922001040)
+- [Diabetic Retinopathy Information](https://www.mayoclinic.org/diseases-conditions/diabetic-retinopathy/symptoms-causes/syc-20371611)
+- [GradCAM Paper](https://arxiv.org/abs/1610.02391)
+
+## 🙏 Acknowledgments
+
+Special thanks to the DeepDRiD dataset creators and the medical professionals who contributed to the ground truth labeling.
+
+## 📧 Contact
+
+For questions or collaborations, please open an issue in the repository.
